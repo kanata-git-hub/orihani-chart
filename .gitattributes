@@ -1,0 +1,12 @@
+# 이미지 파일
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+
+# 폰트 파일
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
