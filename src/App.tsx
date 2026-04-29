@@ -5,6 +5,11 @@
 
 import React, { useState } from 'react';
 import { AlertCircle } from 'lucide-react';
+import { Routes, Route, useNavigate } from 'react-router-dom';
+import { useAuth } from './contexts/AuthContext';
+import { LoginPage, UnauthorizedPage } from './pages/AuthPages';
+import { AdminPage } from './pages/AdminPage';
+import { ProtectedRoute } from './components/ProtectedRoute';
 import { usePatientData } from './hooks/usePatientData';
 import { generateAIChart } from './services/aiService';
 import { Header } from './components/Header';
@@ -15,7 +20,7 @@ import { FollowUpTab } from './components/FollowUpTab';
 
 type AppMode = 'INITIAL' | 'FOLLOW_UP';
 
-export default function App() {
+function MainApp() {
   const {
     activeTab,
     setActiveTab,
@@ -25,6 +30,9 @@ export default function App() {
     updateResult,
     resetTab
   } = usePatientData();
+
+  const { role, user, logout } = useAuth();
+  const navigate = useNavigate();
 
   const [appMode, setAppMode] = useState<AppMode>('INITIAL');
   const [isLoading, setIsLoading] = useState(false);
@@ -55,11 +63,28 @@ export default function App() {
     setIsResetModalOpen(false);
   };
 
+  const isAdmin = role === 'admin' || user?.email === 'kanata840@gmail.com';
+
   return (
     <div className="min-h-screen bg-bg-light text-primary p-4 md:p-8">
       <div className="max-w-[1800px] mx-auto">
         {/* Top App Mode Toggle */}
         <div className="flex justify-end gap-2 mb-4 hidden lg:flex">
+          <button 
+            onClick={logout}
+            className="px-6 py-2.5 border-2 border-primary font-bold text-lg transition-colors bg-white text-primary hover:bg-primary/5"
+            title="로그아웃"
+          >
+            로그아웃
+          </button>
+          {isAdmin && (
+            <button 
+              onClick={() => navigate('/admin')}
+              className="px-8 py-2.5 border-2 border-primary font-bold text-lg transition-colors bg-white text-primary hover:bg-primary/5"
+            >
+              관리
+            </button>
+          )}
           <button 
             onClick={() => setAppMode('INITIAL')}
             className={`px-8 py-2.5 border-2 border-primary font-bold text-lg transition-colors ${appMode === 'INITIAL' ? 'bg-accent text-primary shadow-[4px_4px_0px_0px_rgba(85,44,36,1)] translate-y-[-2px]' : 'bg-white text-primary hover:bg-primary/5'}`}
@@ -79,14 +104,29 @@ export default function App() {
         {/* Mobile App Mode Toggle */}
         <div className="flex justify-center gap-2 mb-6 lg:hidden">
           <button 
+            onClick={logout}
+            className="py-3 px-4 border-2 border-primary font-bold text-sm transition-colors bg-white text-primary whitespace-nowrap"
+            title="로그아웃"
+          >
+            로그아웃
+          </button>
+          {isAdmin && (
+            <button 
+              onClick={() => navigate('/admin')}
+              className="flex-1 py-3 border-2 border-primary font-bold text-sm lg:text-lg transition-colors bg-white text-primary"
+            >
+              관리
+            </button>
+          )}
+          <button 
             onClick={() => setAppMode('INITIAL')}
-            className={`flex-1 py-3 border-2 border-primary font-bold text-lg transition-colors ${appMode === 'INITIAL' ? 'bg-accent text-primary shadow-[4px_4px_0px_0px_rgba(85,44,36,1)]' : 'bg-white text-primary'}`}
+            className={`flex-1 py-3 border-2 border-primary font-bold text-sm lg:text-lg transition-colors ${appMode === 'INITIAL' ? 'bg-accent text-primary shadow-[4px_4px_0px_0px_rgba(85,44,36,1)]' : 'bg-white text-primary'}`}
           >
             초진 차트
           </button>
           <button 
             onClick={() => setAppMode('FOLLOW_UP')}
-            className={`flex-1 py-3 border-2 border-primary font-bold text-lg transition-colors ${appMode === 'FOLLOW_UP' ? 'bg-accent text-primary shadow-[4px_4px_0px_0px_rgba(85,44,36,1)]' : 'bg-white text-primary'}`}
+            className={`flex-1 py-3 border-2 border-primary font-bold text-sm lg:text-lg transition-colors ${appMode === 'FOLLOW_UP' ? 'bg-accent text-primary shadow-[4px_4px_0px_0px_rgba(85,44,36,1)]' : 'bg-white text-primary'}`}
           >
             처방 재평가
           </button>
@@ -150,5 +190,24 @@ export default function App() {
         }
       `}} />
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <Routes>
+      <Route path="/login" element={<LoginPage />} />
+      <Route path="/unauthorized" element={<UnauthorizedPage />} />
+      <Route path="/admin" element={
+        <ProtectedRoute requireAdmin={true}>
+          <AdminPage />
+        </ProtectedRoute>
+      } />
+      <Route path="/" element={
+        <ProtectedRoute>
+          <MainApp />
+        </ProtectedRoute>
+      } />
+    </Routes>
   );
 }

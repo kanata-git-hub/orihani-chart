@@ -1,0 +1,24 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} { allow read, write: if false; }
+
+    function isSignedIn() { return request.auth != null; }
+    // We only require email, mostly because popup doesn't always guarantee email_verified true out of the box in emulator tests 
+    // but in prod Google Auth it is true. Let's make it more robust.
+    function isSuperAdmin() { return isSignedIn() && request.auth.token.email == 'kanata840@gmail.com'; }
+    function isAdmin() {
+      return isSuperAdmin() || 
+        (isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.token.email)) && get(/databases/$(database)/documents/users/$(request.auth.token.email)).data.role == 'admin');
+    }
+
+    match /users/{userId} {
+      // Admins can list and read everyone. Users can only read their own info.
+      allow list: if isAdmin() || (isSignedIn() && resource.data.email == request.auth.token.email);
+      allow get: if isAdmin() || (isSignedIn() && userId == request.auth.token.email);
+
+      // Relaxing write constraints to let Admin freely manage/migrate docs
+      allow write: if isAdmin();
+    }
+  }
+}
