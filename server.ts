@@ -8,7 +8,7 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 // AI Studio requires port 3000. Cloud Run provides PORT via env var (usually 8080).
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORT || 3000;
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
