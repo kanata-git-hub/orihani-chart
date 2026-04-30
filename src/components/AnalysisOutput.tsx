@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { FileText, Clipboard, CheckCircle2, Stethoscope, Info, RefreshCw, MessageSquareHeart } from 'lucide-react';
 import { AnalysisResult } from '../types';
 import personaImg from '../image/persona.png';
-import { renderWithBold } from '../utils/formatUtils';
+import { renderWithBold, autoFormatText } from '../utils/formatUtils';
 
 interface AnalysisOutputProps {
   result: AnalysisResult | null;
@@ -67,7 +67,7 @@ export const AnalysisOutput: React.FC<AnalysisOutputProps> = ({ result }) => {
           </div>
           <div className="font-mono text-base leading-relaxed whitespace-pre-wrap text-white/90">
             {typeof result.chartContent === 'string' 
-              ? result.chartContent 
+              ? autoFormatText(result.chartContent)
               : JSON.stringify(result.chartContent, null, 2)}
           </div>
           <div className="mt-6 pt-4 border-t border-white/20 flex items-center gap-2 text-xs font-bold opacity-50">

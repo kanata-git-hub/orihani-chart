@@ -1,4 +1,4 @@
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
 import { PatientBriefing, AnalysisResult } from "../types";
 import { generateChartPrompt } from "./prompts";
 
@@ -61,10 +61,27 @@ export const generateAIChart = async (
             contents: [{ parts: contents }],
             config: {
               responseMimeType: "application/json",
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  chartContent: { type: Type.STRING },
+                  diagnosticGuide: { type: Type.STRING },
+                  matchProbability: { type: Type.STRING },
+                  matchReason: { type: Type.STRING },
+                  assessmentDisease: { type: Type.STRING },
+                  treatmentRecommendation: { type: Type.STRING },
+                  recommendedTreatmentType: { type: Type.STRING },
+                  consultationFeedback: { type: Type.STRING }
+                },
+                required: ["chartContent", "diagnosticGuide", "treatmentRecommendation"]
+              }
             }
           })
         );
-        let rawText = response.text || '{}';
+        let rawText = response.text || '';
+        if (!rawText) {
+          throw new Error("Empty response from AI (possibly blocked by safety filters)");
+        }
         rawText = rawText.trim();
         if (rawText.startsWith('```json')) {
           rawText = rawText.substring(7);
@@ -74,7 +91,11 @@ export const generateAIChart = async (
         if (rawText.endsWith('```')) {
           rawText = rawText.substring(0, rawText.length - 3);
         }
-        return JSON.parse(rawText.trim());
+        const parsed = JSON.parse(rawText.trim());
+        if (!parsed.chartContent && !parsed.diagnosticGuide) {
+          throw new Error("AI returned empty fields in JSON");
+        }
+        return parsed;
       } catch (err) {
         console.warn(`Model ${model} failed. Trying next...`, err);
         lastError = err;

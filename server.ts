@@ -1,7 +1,7 @@
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -57,10 +57,29 @@ app.post("/api/generate-chart", async (req, res) => {
           ai.models.generateContent({
             model: model,
             contents: [{ parts: contents }],
-            config: { responseMimeType: "application/json" }
+            config: { 
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  chartContent: { type: Type.STRING },
+                  diagnosticGuide: { type: Type.STRING },
+                  matchProbability: { type: Type.STRING },
+                  matchReason: { type: Type.STRING },
+                  assessmentDisease: { type: Type.STRING },
+                  treatmentRecommendation: { type: Type.STRING },
+                  recommendedTreatmentType: { type: Type.STRING },
+                  consultationFeedback: { type: Type.STRING }
+                },
+                required: ["chartContent", "diagnosticGuide", "treatmentRecommendation"]
+              }
+            }
           })
         );
-        let rawText = response.text || '{}';
+        let rawText = response.text || '';
+        if (!rawText) {
+          throw new Error("Empty response from AI (possibly blocked by safety filters)");
+        }
         rawText = rawText.trim();
         if (rawText.startsWith('```json')) {
           rawText = rawText.substring(7);
@@ -70,7 +89,11 @@ app.post("/api/generate-chart", async (req, res) => {
         if (rawText.endsWith('```')) {
           rawText = rawText.substring(0, rawText.length - 3);
         }
-        return res.json(JSON.parse(rawText.trim()));
+        const parsed = JSON.parse(rawText.trim());
+        if (!parsed.chartContent && !parsed.diagnosticGuide) {
+          throw new Error("AI returned empty fields in JSON");
+        }
+        return res.json(parsed);
       } catch (err: any) {
         console.warn(`Model ${model} failed. Trying next...`, err.message);
         lastError = err;

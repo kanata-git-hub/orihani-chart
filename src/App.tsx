@@ -51,7 +51,8 @@ function MainApp() {
       updateResult(activeTab, parsedResult);
     } catch (err) {
       console.error(err);
-      setError('차트 생성 중 오류가 발생했습니다. API 키 설정이나 네트워크 상태를 확인해주세요.');
+      const errorMessage = err instanceof Error ? err.message : '차트 생성 중 오류가 발생했습니다.';
+      setError(`차트 생성 실패: ${errorMessage}`);
     } finally {
       setIsLoading(false);
     }
