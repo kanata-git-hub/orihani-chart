@@ -14,5 +14,7 @@ RUN npm install --omit=dev
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/server.ts ./server.ts
 
+ENV NODE_ENV=production
+
 EXPOSE 8080
 CMD ["npm", "run", "start"]
