@@ -60,7 +60,17 @@ app.post("/api/generate-chart", async (req, res) => {
             config: { responseMimeType: "application/json" }
           })
         );
-        return res.json(JSON.parse(response.text || '{}'));
+        let rawText = response.text || '{}';
+        rawText = rawText.trim();
+        if (rawText.startsWith('```json')) {
+          rawText = rawText.substring(7);
+        } else if (rawText.startsWith('```')) {
+          rawText = rawText.substring(3);
+        }
+        if (rawText.endsWith('```')) {
+          rawText = rawText.substring(0, rawText.length - 3);
+        }
+        return res.json(JSON.parse(rawText.trim()));
       } catch (err: any) {
         console.warn(`Model ${model} failed. Trying next...`, err.message);
         lastError = err;

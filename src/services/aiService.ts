@@ -28,81 +28,136 @@ export const generateAIChart = async (
 ): Promise<AnalysisResult> => {
   const prompt = generateChartPrompt(briefing);
 
-  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
-  
-  const contents: any[] = [{ text: prompt }];
-  if (audioData) {
-    contents.unshift({
-      inlineData: {
-        mimeType: audioData.mimeType,
-        data: audioData.data
-      }
-    });
-  }
+  // AI Studio 환경(미리보기)에서는 process.env.GEMINI_API_KEY가 주입됩니다.
+  // Cloud Run 배포 빌드 시에는 이 값이 undefined로 치환되어 서버를 호출하게 됩니다.
+  const clientApiKey = process.env.GEMINI_API_KEY;
 
-  const models = [
-    "gemini-3.1-pro-preview",
-    "gemini-3-flash-preview",
-    "gemini-3.1-flash-lite-preview"
-  ];
-
-  let lastError: any;
-
-  for (const model of models) {
-    try {
-      const response = await executeWithRetry(() => 
-        ai.models.generateContent({
-          model: model,
-          contents: [{ parts: contents }],
-          config: {
-            responseMimeType: "application/json",
-          }
-        })
-      );
-      return JSON.parse(response.text || '{}');
-    } catch (err) {
-      console.warn(`Model ${model} failed. Trying next...`, err);
-      lastError = err;
+  if (clientApiKey) {
+    console.log("[Client Mode] AI Studio 환경: 클라이언트에서 직접 생성");
+    const ai = new GoogleGenAI({ apiKey: clientApiKey });
+    
+    const contents: any[] = [{ text: prompt }];
+    if (audioData) {
+      contents.unshift({
+        inlineData: {
+          mimeType: audioData.mimeType,
+          data: audioData.data
+        }
+      });
     }
-  }
 
-  throw lastError;
+    const models = [
+      "gemini-3.1-pro-preview",
+      "gemini-3-flash-preview",
+      "gemini-3.1-flash-lite-preview"
+    ];
+
+    let lastError: any;
+    for (const model of models) {
+      try {
+        const response = await executeWithRetry(() => 
+          ai.models.generateContent({
+            model: model,
+            contents: [{ parts: contents }],
+            config: {
+              responseMimeType: "application/json",
+            }
+          })
+        );
+        let rawText = response.text || '{}';
+        rawText = rawText.trim();
+        if (rawText.startsWith('```json')) {
+          rawText = rawText.substring(7);
+        } else if (rawText.startsWith('```')) {
+          rawText = rawText.substring(3);
+        }
+        if (rawText.endsWith('```')) {
+          rawText = rawText.substring(0, rawText.length - 3);
+        }
+        return JSON.parse(rawText.trim());
+      } catch (err) {
+        console.warn(`Model ${model} failed. Trying next...`, err);
+        lastError = err;
+      }
+    }
+    throw lastError;
+
+  } else {
+    console.log("[Server Mode] 배포 환경: 백엔드 API를 통해 생성");
+    const response = await fetch('/api/generate-chart', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        prompt,
+        audioData
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || `Server error: ${response.status}`);
+    }
+
+    return response.json();
+  }
 };
 
 export const generateFollowUpAnalysis = async (
   prompt: string
 ): Promise<string> => {
-  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+  const clientApiKey = process.env.GEMINI_API_KEY;
 
-  // 최고 지능 Pro 모델을 우선 시도하고, 쿼터 제한이나 오류 시 빠른 처리를 위해 Flash 모델로 우회
-  const models = [
-    "gemini-3.1-pro-preview",
-    "gemini-3-flash-preview"
-  ];
+  if (clientApiKey) {
+    const ai = new GoogleGenAI({ apiKey: clientApiKey });
+    const models = [
+      "gemini-3.1-pro-preview",
+      "gemini-3-flash-preview"
+    ];
 
-  let lastError: any;
-
-  for (const model of models) {
-    try {
-      // 분석 요청이므로 재시도 방식을 사용하여 호출합니다.
-      const response = await executeWithRetry(() =>
-        ai.models.generateContent({
-          model: model,
-          contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        })
-      , 2, 2000); // 2000ms delay
-      return response.text || '';
-    } catch (error: any) {
-      console.warn(`[FollowUp Analysis] Model ${model} failed. Trying fallback...`, error);
-      lastError = error;
+    let lastError: any;
+    for (const model of models) {
+      try {
+        const response = await executeWithRetry(() =>
+          ai.models.generateContent({
+            model: model,
+            contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          })
+        , 2, 2000);
+        return response.text || '';
+      } catch (error: any) {
+        console.warn(`[FollowUp Analysis] Model ${model} failed. Trying fallback...`, error);
+        lastError = error;
+      }
     }
-  }
 
-  // 모든 모델이 실패했을 때만 쿼터 초과 에러를 UI로 던짐
-  console.error("FollowUp Analysis final error:", lastError);
-  const isRateLimit = lastError?.status === 429 || lastError?.message?.toLowerCase().includes('quota');
-  if (isRateLimit) {
-    throw new Error("QUOTA_EXCEEDED");
+    console.error("FollowUp Analysis final error:", lastError);
+    const isRateLimit = lastError?.status === 429 || lastError?.message?.toLowerCase().includes('quota');
+    if (isRateLimit) {
+      throw new Error("QUOTA_EXCEEDED");
+    }
+    throw lastError;
+
+  } else {
+    const response = await fetch('/api/generate-followup', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ prompt })
+    });
+
+    if (!response.ok) {
+      if (response.status === 429) {
+        throw new Error("QUOTA_EXCEEDED");
+      }
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || `Server error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    return data.text;
   }
-  throw lastError;
 };
+
