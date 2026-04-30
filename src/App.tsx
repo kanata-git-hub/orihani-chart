@@ -49,9 +49,16 @@ function MainApp() {
     try {
       const parsedResult = await generateAIChart(briefing, audioData);
       updateResult(activeTab, parsedResult);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      setError('차트 생성 중 오류가 발생했습니다. API 키 설정이나 네트워크 상태를 확인해주세요.');
+      const errMsg = err?.message?.toLowerCase() || '';
+      if (errMsg.includes('quota') || errMsg.includes('429') || errMsg.includes('rate limit')) {
+        setError('무료 제공량(Quota)을 초과했습니다. 잠시 후 다시 시도해주세요.');
+      } else if (errMsg.includes('api key') || errMsg.includes('unauthorized') || errMsg.includes('401')) {
+        setError('API 호출 오류: 유효한 API 키가 설정되지 않았습니다. 빌드 환경변수를 확인해주세요.');
+      } else {
+        setError(`차트 생성 중 오류가 발생했습니다: ${err?.message || '알 수 없는 오류'}`);
+      }
     } finally {
       setIsLoading(false);
     }
