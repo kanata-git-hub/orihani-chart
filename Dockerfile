@@ -1,15 +1,19 @@
-# build environment
-FROM node:20-alpine as build
+# 1. Build environment
+FROM node:22-alpine as build
 WORKDIR /app
 COPY package*.json ./
 RUN npm install
 COPY . .
 RUN npm run build
 
-# production environment
-FROM nginx:alpine
-COPY --from=build /app/dist /usr/share/nginx/html
-# SPA 라우팅을 위한 nginx 설정
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# 2. Production environment
+FROM node:22-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm install --omit=dev
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/server.ts ./server.ts
+
 EXPOSE 8080
-CMD ["nginx", "-g", "daemon off;"]
+# Node 환경에서 직접 server.ts 를 실행
+CMD ["npm", "run", "start"]
