@@ -9,7 +9,9 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-app.use(express.json());
+// 아래처럼 limit 옵션을 50mb (충분한 크기)로 지정해 줍니다.
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // API Endpoints
 const executeWithRetry = async (apiCall: () => Promise<any>, maxRetries = 3, baseDelayMs = 5000) => {
