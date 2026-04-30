@@ -28,37 +28,81 @@ export const generateAIChart = async (
 ): Promise<AnalysisResult> => {
   const prompt = generateChartPrompt(briefing);
 
-  const response = await fetch('/api/generate-chart', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt, audioData })
-  });
-
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.error || `Server responded with ${response.status}`);
+  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+  
+  const contents: any[] = [{ text: prompt }];
+  if (audioData) {
+    contents.unshift({
+      inlineData: {
+        mimeType: audioData.mimeType,
+        data: audioData.data
+      }
+    });
   }
 
-  return response.json();
+  const models = [
+    "gemini-3.1-pro-preview",
+    "gemini-3-flash-preview",
+    "gemini-3.1-flash-lite-preview"
+  ];
+
+  let lastError: any;
+
+  for (const model of models) {
+    try {
+      const response = await executeWithRetry(() => 
+        ai.models.generateContent({
+          model: model,
+          contents: [{ parts: contents }],
+          config: {
+            responseMimeType: "application/json",
+          }
+        })
+      );
+      return JSON.parse(response.text || '{}');
+    } catch (err) {
+      console.warn(`Model ${model} failed. Trying next...`, err);
+      lastError = err;
+    }
+  }
+
+  throw lastError;
 };
 
 export const generateFollowUpAnalysis = async (
   prompt: string
 ): Promise<string> => {
-  const response = await fetch('/api/generate-followup', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt })
-  });
+  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
-  if (!response.ok) {
-    if (response.status === 429) {
-      throw new Error("QUOTA_EXCEEDED");
+  // 최고 지능 Pro 모델을 우선 시도하고, 쿼터 제한이나 오류 시 빠른 처리를 위해 Flash 모델로 우회
+  const models = [
+    "gemini-3.1-pro-preview",
+    "gemini-3-flash-preview"
+  ];
+
+  let lastError: any;
+
+  for (const model of models) {
+    try {
+      // 분석 요청이므로 재시도 방식을 사용하여 호출합니다.
+      const response = await executeWithRetry(() =>
+        ai.models.generateContent({
+          model: model,
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        })
+      , 2, 2000); // 2000ms delay
+      return response.text || '';
+    } catch (error: any) {
+      console.warn(`[FollowUp Analysis] Model ${model} failed. Trying fallback...`, error);
+      lastError = error;
     }
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.error || `Server responded with ${response.status}`);
   }
 
-  const data = await response.json();
-  return data.text;
+  // 모든 모델이 실패했을 때만 쿼터 초과 에러를 UI로 던짐
+  console.error("FollowUp Analysis final error:", lastError);
+  const isRateLimit = lastError?.status === 429 || lastError?.message?.toLowerCase().includes('quota');
+  if (isRateLimit) {
+    throw new Error("QUOTA_EXCEEDED");
+  }
+  throw lastError;
 };
