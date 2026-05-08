@@ -8,7 +8,7 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 // AI Studio requires port 3000. Cloud Run provides PORT via env var (usually 8080).
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
@@ -142,16 +142,15 @@ app.post("/api/generate-followup", async (req, res) => {
 
 // Vite Development Middleware or Static Files
 if (process.env.NODE_ENV !== "production") {
-  import("vite").then(async ({ createServer }) => {
-    const vite = await createServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-    
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Dev Server running on http://localhost:${PORT}`);
-    });
+  const { createServer: createViteServer } = await import("vite");
+  const vite = await createViteServer({
+    server: { middlewareMode: true },
+    appType: "spa",
+  });
+  app.use(vite.middlewares);
+  
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Dev Server running on http://localhost:${PORT}`);
   });
 } else {
   // Production
