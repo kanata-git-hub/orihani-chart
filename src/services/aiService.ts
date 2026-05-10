@@ -49,7 +49,7 @@ export const generateAIChart = async (
     const models = [
       "gemini-3.1-pro-preview",
       "gemini-3-flash-preview",
-      "gemini-3.1-flash-lite-preview"
+      "gemini-3.1-flash-lite"
     ];
 
     let lastError: any;

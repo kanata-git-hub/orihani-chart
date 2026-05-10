@@ -48,7 +48,7 @@ app.post("/api/generate-chart", async (req, res) => {
       });
     }
 
-    const models = ["gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview"];
+    const models = ["gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite"];
     let lastError: any;
 
     for (const model of models) {
