@@ -4,9 +4,10 @@ import personaImg from '../image/persona.png';
 interface HeaderProps {
   activeTab: number;
   setActiveTab: (tab: number) => void;
+  onResetAll?: () => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
+export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab, onResetAll }) => {
   return (
     <header className="mb-6 border-b border-primary pb-4 flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
       <div className="flex items-center gap-4">
@@ -18,12 +19,12 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
       </div>
       
       {/* Tab Navigation */}
-      <div className="flex bg-white border border-primary p-1 shadow-[2px_2px_0px_0px_rgba(85,44,36,1)]">
-        {[1, 2, 3, 4, 5].map((num) => (
+      <div className="flex flex-wrap bg-white border border-primary p-1 shadow-[2px_2px_0px_0px_rgba(85,44,36,1)] flex-1 w-full md:w-auto">
+        {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((num) => (
           <button
             key={num}
             onClick={() => setActiveTab(num)}
-            className={`px-5 py-2 text-lg font-bold font-mono uppercase transition-all ${
+            className={`px-3 py-2 text-sm sm:text-base font-bold font-mono uppercase transition-all flex-1 text-center min-w-[60px] ${
               activeTab === num 
                 ? 'bg-accent text-primary' 
                 : 'text-primary hover:bg-primary/5'
@@ -32,9 +33,18 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
             환자 {num}
           </button>
         ))}
+        {onResetAll && (
+          <button
+            onClick={onResetAll}
+            className="px-3 py-2 text-sm sm:text-base font-bold font-mono uppercase transition-all flex-1 text-center min-w-[80px] bg-red-50 text-red-600 hover:bg-red-100 border-l border-primary/20"
+            title="모든 환자 탭 데이터 초기화"
+          >
+            전체 리셋
+          </button>
+        )}
       </div>
 
-      <div className="text-right hidden lg:block">
+      <div className="text-right hidden lg:block shrink-0">
         <p className="text-xs font-mono opacity-50">현재 접속 시간</p>
         <p className="text-sm font-mono">{new Date().toLocaleDateString()} {new Date().toLocaleTimeString()}</p>
       </div>

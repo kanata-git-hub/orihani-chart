@@ -28,6 +28,11 @@ export const useFollowUpData = () => {
       3: getInitialFollowUpData(),
       4: getInitialFollowUpData(),
       5: getInitialFollowUpData(),
+      6: getInitialFollowUpData(),
+      7: getInitialFollowUpData(),
+      8: getInitialFollowUpData(),
+      9: getInitialFollowUpData(),
+      10: getInitialFollowUpData(),
     };
   });
 
@@ -47,5 +52,20 @@ export const useFollowUpData = () => {
     }));
   };
 
-  return { followUpData, setFollowUpData, isFollowUpSaved, resetFollowUpTab };
+  const resetAllFollowUpTabs = () => {
+    setFollowUpData({
+      1: getInitialFollowUpData(),
+      2: getInitialFollowUpData(),
+      3: getInitialFollowUpData(),
+      4: getInitialFollowUpData(),
+      5: getInitialFollowUpData(),
+      6: getInitialFollowUpData(),
+      7: getInitialFollowUpData(),
+      8: getInitialFollowUpData(),
+      9: getInitialFollowUpData(),
+      10: getInitialFollowUpData(),
+    });
+  };
+
+  return { followUpData, setFollowUpData, isFollowUpSaved, resetFollowUpTab, resetAllFollowUpTabs };
 };

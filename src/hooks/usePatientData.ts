@@ -23,6 +23,11 @@ export const usePatientData = () => {
       3: { briefing: { ...initialBriefing }, result: null },
       4: { briefing: { ...initialBriefing }, result: null },
       5: { briefing: { ...initialBriefing }, result: null },
+      6: { briefing: { ...initialBriefing }, result: null },
+      7: { briefing: { ...initialBriefing }, result: null },
+      8: { briefing: { ...initialBriefing }, result: null },
+      9: { briefing: { ...initialBriefing }, result: null },
+      10: { briefing: { ...initialBriefing }, result: null },
     };
   });
 
@@ -63,6 +68,21 @@ export const usePatientData = () => {
     }));
   };
 
+  const resetAllTabs = () => {
+    setPatientData({
+      1: { briefing: { ...initialBriefing }, result: null },
+      2: { briefing: { ...initialBriefing }, result: null },
+      3: { briefing: { ...initialBriefing }, result: null },
+      4: { briefing: { ...initialBriefing }, result: null },
+      5: { briefing: { ...initialBriefing }, result: null },
+      6: { briefing: { ...initialBriefing }, result: null },
+      7: { briefing: { ...initialBriefing }, result: null },
+      8: { briefing: { ...initialBriefing }, result: null },
+      9: { briefing: { ...initialBriefing }, result: null },
+      10: { briefing: { ...initialBriefing }, result: null },
+    });
+  };
+
   return {
     activeTab,
     setActiveTab,
@@ -70,6 +90,7 @@ export const usePatientData = () => {
     isSaved,
     updateBriefingField,
     updateResult,
-    resetTab
+    resetTab,
+    resetAllTabs
   };
 };
