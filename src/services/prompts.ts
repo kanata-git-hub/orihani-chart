@@ -115,9 +115,17 @@ export const generateFollowUpInitialPrompt = (
 - 원장님 초기 의도/판단 메모: ${memo || '없음'}
 
 [장기 처방 히스토리]
-${records.map(r => {
+${records.map((r, index) => {
   const rxCombined = [r.rx1, r.rx2, r.rx3].filter(Boolean).join(' + ') || r.prescription || '미기재';
-  return `[${r.period}]\n- 처방명: ${rxCombined}\n- 환자 반응 및 피드백: ${r.response}`;
+  const delivery = r.deliveryDate ? ` (배송일: ${r.deliveryDate})` : '';
+  
+  let durationText = r.period;
+  if (r.period && r.period.includes('/')) {
+    const actualTaken = r.period.split('/')[0];
+    durationText = `${actualTaken} (입력된 전체값: ${r.period})`;
+  }
+  
+  return `[복용 기간/차수: ${durationText}]${delivery}\n- 처방명: ${rxCombined}\n- 환자 반응 및 피드백: ${r.response}`;
 }).join('\n\n')}
 
 [출력 지시사항 - 매우 중요]

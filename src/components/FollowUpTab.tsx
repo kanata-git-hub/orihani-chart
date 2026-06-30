@@ -79,9 +79,11 @@ export const FollowUpTab: React.FC<{ activeTab: number }> = ({ activeTab }) => {
 
       // Map matched rows to FollowUpRecords
       const newRecords = matches.map((match: any, index: number) => {
-        let period = match['현재/총기간'] || `${index + 1}개월차`;
-        // if period contains a newline like '현재/\n총기간', we take just string
-        period = period.replace('\n', '');
+        const rawPeriod = match['현재/총기간'] || match['현재/\n총기간'] || match['현재 / 총기간'] || match['현재/총 기간'] || '';
+        let period = rawPeriod ? String(rawPeriod).replace(/\n/g, '') : `${index + 1}회차`;
+
+        const rawDeliveryDate = match['배송일'] || match['배송\n일'] || match['배송 일'] || '';
+        const deliveryDate = rawDeliveryDate ? String(rawDeliveryDate).replace(/\n/g, '') : '';
 
         let rxCombined = match['처방 조합'] || '';
         const rx1 = match['처방'] || '';
@@ -115,6 +117,7 @@ export const FollowUpTab: React.FC<{ activeTab: number }> = ({ activeTab }) => {
         return {
           id: Date.now().toString() + index,
           period,
+          deliveryDate,
           prescription: rxCombined,
           rx1: '',
           rx2: '',

@@ -30,7 +30,14 @@ export const FollowUpRecordItem: React.FC<FollowUpRecordItemProps> = ({
           </button>
         )}
       </div>
-      <h3 className="font-bold text-accent-dark mb-2 text-lg">{record.period}</h3>
+      <div className="flex items-center gap-2 mb-2">
+        <h3 className="font-bold text-accent-dark text-lg">
+          {record.period.includes('/') 
+            ? `복용 기간: ${record.period.split('/')[0]} (현재/총: ${record.period})` 
+            : `복용 기간/회차: ${record.period}`}
+        </h3>
+        {record.deliveryDate && <span className="text-xs bg-primary/10 text-primary px-2 py-0.5 rounded-sm">배송일: {record.deliveryDate}</span>}
+      </div>
       <div className="mb-2">
         <span className="block text-xs font-bold opacity-70 mb-1">처방명</span>
         <p className="text-sm font-bold text-primary">{prescriptions || '처방 기록 없음'}</p>

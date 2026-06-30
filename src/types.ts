@@ -29,6 +29,7 @@ export interface AnalysisResult {
 export interface FollowUpRecord {
   id: string;
   period: string; // e.g., "1개월차"
+  deliveryDate?: string; // e.g., 배송일
   prescription?: string; // legacy e.g., "소풍산+계지가작약탕+시호계지탕"
   rx1?: string;
   rx2?: string;
