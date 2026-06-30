@@ -140,6 +140,67 @@ app.post("/api/generate-followup", async (req, res) => {
   }
 });
 
+app.post("/api/fetch-google-sheet", async (req, res) => {
+  const { accessToken, name, gender, symptoms } = req.body;
+  
+  if (!accessToken) {
+    return res.status(401).json({ error: "Google Access Token is required. Please re-login." });
+  }
+
+  try {
+    const { google } = await import('googleapis');
+    const auth = new google.auth.OAuth2();
+    auth.setCredentials({ access_token: accessToken });
+
+    const sheets = google.sheets({ version: 'v4', auth });
+    
+    const spreadsheetId = '1Nz9rBTwGYog-HEPPUyX5YsNnKvWBW5B9E7LADKMVZ48';
+    const range = '한약환자!A1:U';
+
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range,
+    });
+
+    const rows = response.data.values;
+    if (!rows || rows.length === 0) {
+      return res.status(404).json({ error: 'No data found in the sheet.' });
+    }
+
+    const headers = rows[0];
+    const dataRows = rows.slice(1);
+
+    const nameIndex = headers.indexOf('성함');
+    const genderIndex = headers.indexOf('성별');
+    const symptomsIndex = headers.indexOf('증상');
+
+    const matches = dataRows.filter((row: any[]) => {
+      const rowName = row[nameIndex] || '';
+      const rowGender = row[genderIndex] || '';
+      const rowSymptoms = row[symptomsIndex] || '';
+
+      const nameMatch = rowName.trim() === name?.trim();
+      const genderMatch = rowGender.trim() === gender?.trim();
+      const symptomsMatch = symptoms ? rowSymptoms.includes(symptoms.trim()) : true; 
+      
+      return nameMatch && genderMatch && symptomsMatch;
+    });
+
+    const results = matches.map((row: any[]) => {
+      const obj: Record<string, string> = {};
+      headers.forEach((header: string, index: number) => {
+        obj[header] = row[index] || '';
+      });
+      return obj;
+    });
+
+    return res.json({ matches: results });
+  } catch (error: any) {
+    console.error('Google Sheets API Error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Vite Development Middleware or Static Files
 if (process.env.NODE_ENV !== "production") {
   const { createServer: createViteServer } = await import("vite");

@@ -1,7 +1,7 @@
 import React from 'react';
 
 interface TextAreaFieldProps {
-  label: string;
+  label: React.ReactNode;
   name: string;
   value: string;
   onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void;

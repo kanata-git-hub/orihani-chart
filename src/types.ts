@@ -37,6 +37,7 @@ export interface FollowUpRecord {
 }
 
 export interface FollowUpBriefing {
+  patientName: string;
   gender: string;
   age: string;
   mainSymptom: string;

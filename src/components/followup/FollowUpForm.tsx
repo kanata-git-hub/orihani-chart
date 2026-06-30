@@ -14,6 +14,8 @@ interface FollowUpFormProps {
   onUpdateRecord: (id: string, field: keyof FollowUpRecord, value: string) => void;
   onRemoveRecord: (id: string) => void;
   onRx1Update: (id: string, value: string) => void;
+  onImportFromSheets?: () => void;
+  isImporting?: boolean;
 }
 
 export const FollowUpForm: React.FC<FollowUpFormProps> = ({
@@ -24,7 +26,9 @@ export const FollowUpForm: React.FC<FollowUpFormProps> = ({
   onAddRecord,
   onUpdateRecord,
   onRemoveRecord,
-  onRx1Update
+  onRx1Update,
+  onImportFromSheets,
+  isImporting
 }) => {
   return (
     <div className="w-full h-full flex flex-col gap-6">
@@ -45,17 +49,21 @@ export const FollowUpForm: React.FC<FollowUpFormProps> = ({
           </button>
         </div>
         <h2 className="text-xl font-bold mb-4">1. 환자 정보</h2>
+        
         <div className="space-y-4">
           <div className="flex gap-4">
-            <div className="w-1/2">
-              <label className="block text-sm font-bold opacity-80 mb-1">성별</label>
+            <div className="w-1/3">
+              <InputField label={<span className="text-[#a52a2a]">성함 (검색용)</span>} name="patientName" value={briefing.patientName || ''} onChange={(e) => onUpdateBriefing('patientName', e.target.value)} placeholder="예: 홍길동" />
+            </div>
+            <div className="w-1/3">
+              <label className="block text-sm font-bold mb-1 text-[#a52a2a]">성별 (검색용)</label>
               <div className="flex gap-2">
-                {['남성', '여성', '무관'].map((g) => (
+                {['남', '여'].map((g) => (
                   <button
                     key={g}
                     onClick={() => onUpdateBriefing('gender', g)}
                     className={`flex-1 py-2 text-sm font-bold border border-primary transition-colors cursor-pointer ${
-                      (briefing.gender || '무관') === g ? 'bg-accent text-primary' : 'bg-white text-primary'
+                      briefing.gender === g ? 'bg-accent text-primary' : 'bg-white text-primary'
                     }`}
                   >
                     {g}
@@ -63,40 +71,51 @@ export const FollowUpForm: React.FC<FollowUpFormProps> = ({
                 ))}
               </div>
             </div>
-            <div className="w-1/2">
-              <InputField label="나이" name="age" value={briefing.age} onChange={(e) => onUpdateBriefing('age', e.target.value)} placeholder="예: 45세" />
+            <div className="w-1/3">
+              <InputField label="나이 (선택, 분석용)" name="age" value={briefing.age} onChange={(e) => onUpdateBriefing('age', e.target.value)} placeholder="예: 45세" />
             </div>
           </div>
-          <InputField label="주요 증상" name="mainSymptom" value={briefing.mainSymptom} onChange={(e) => onUpdateBriefing('mainSymptom', e.target.value)} placeholder="예: 상체 열감, 불면" />
-          <TextAreaField label="환자의 증상/변증" name="patientPattern" value={briefing.patientPattern} onChange={(e) => onUpdateBriefing('patientPattern', e.target.value)} placeholder="예: 식욕부진, 잦은 설사, 피로감 (비위기허 의심)" />
-          <TextAreaField label="원장님 초기 판단 메모" name="memo" value={briefing.memo} onChange={(e) => onUpdateBriefing('memo', e.target.value)} placeholder="예: 소화가 덜 되어 습담이 정체된 것으로 보임" />
+          <InputField label={<span className="text-[#a52a2a]">주요 증상 (검색 및 분석용, 선택)</span>} name="mainSymptom" value={briefing.mainSymptom} onChange={(e) => onUpdateBriefing('mainSymptom', e.target.value)} placeholder="예: 어지럼증 (해당 증상이 포함된 기록만 검색, AI 분석에도 활용됨)" />
+          <TextAreaField label="환자의 증상/변증 (선택, 분석용)" name="patientPattern" value={briefing.patientPattern} onChange={(e) => onUpdateBriefing('patientPattern', e.target.value)} placeholder="예: 식욕부진, 잦은 설사, 피로감 (비위기허 의심)" />
+          <TextAreaField label="원장님 초기 판단 메모 (선택, 분석용)" name="memo" value={briefing.memo} onChange={(e) => onUpdateBriefing('memo', e.target.value)} placeholder="예: 소화가 덜 되어 습담이 정체된 것으로 보임" />
         </div>
+        
+        {onImportFromSheets && (
+          <div className="mt-4 bg-primary/5 p-4 border border-primary">
+            <p className="text-xs opacity-70 mb-2">Google Sheets 연동을 통해 과거 처방 기록을 불러올 수 있습니다.</p>
+            <button 
+              onClick={onImportFromSheets}
+              disabled={isImporting}
+              className="w-full py-2 bg-primary text-white font-bold text-sm hover:bg-primary-light transition-colors disabled:opacity-50 flex justify-center items-center gap-2 cursor-pointer"
+            >
+              {isImporting ? '불러오는 중...' : '구글 시트에서 기록 가져오기'}
+            </button>
+          </div>
+        )}
       </section>
 
       {/* Timeline */}
       <section className="bg-white border border-primary p-6 shadow-[4px_4px_0px_0px_rgba(85,44,36,1)] flex-1 flex flex-col">
         <h2 className="text-xl font-bold mb-4">2. 장기 처방 히스토리</h2>
         <div className="flex-1 overflow-y-auto pr-2 space-y-4 custom-scrollbar mb-4" style={{ maxHeight: '650px' }}>
-          {briefing.records.map((record) => (
-            <FollowUpRecordItem
-              key={record.id}
-              record={record}
-              isDeletable={briefing.records.length > 1}
-              onUpdate={onUpdateRecord}
-              onRx1Update={onRx1Update}
-              onRemove={onRemoveRecord}
-            />
-          ))}
+          {briefing.records.length === 0 ? (
+            <div className="text-center py-10 opacity-50 flex flex-col items-center">
+              <span className="text-sm">검색된 과거 처방 기록이 없습니다.</span>
+              <span className="text-xs mt-1">상단의 '구글 시트에서 기록 가져오기' 버튼을 눌러주세요.</span>
+            </div>
+          ) : (
+            briefing.records.map((record) => (
+              <FollowUpRecordItem
+                key={record.id}
+                record={record}
+                isDeletable={true}
+                onUpdate={onUpdateRecord}
+                onRx1Update={onRx1Update}
+                onRemove={onRemoveRecord}
+              />
+            ))
+          )}
         </div>
-        <button 
-          onClick={onAddRecord}
-          className="w-full py-4 border-2 border-dashed border-primary/50 text-primary font-bold hover:bg-primary/5 flex flex-col items-center justify-center gap-1 transition-colors cursor-pointer bg-white"
-        >
-          <div className="flex items-center gap-2">
-            <Plus size={20} /> <span className="text-lg">다음 달 투약 기록 추가</span>
-          </div>
-          <span className="text-xs opacity-60 font-mono">(6개월, 1년 등 무제한 기록 가능)</span>
-        </button>
       </section>
     </div>
   );

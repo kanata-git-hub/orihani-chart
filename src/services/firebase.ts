@@ -5,9 +5,10 @@ import firebaseConfig from '../../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+export const db = getFirestore(app, 'ai-studio-b2c282bc-7bca-4b2d-91b0-5a1e4c383e0a');
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
+googleProvider.addScope('https://www.googleapis.com/auth/spreadsheets.readonly');
 
 export enum OperationType {
   CREATE = 'create',

@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { User, onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
+import { User, onAuthStateChanged, signInWithPopup, signOut, GoogleAuthProvider } from 'firebase/auth';
 import { doc, getDoc, collection, query, where, getDocs } from 'firebase/firestore';
 import { auth, db, googleProvider, handleFirestoreError, OperationType } from '../services/firebase';
 
@@ -10,6 +10,8 @@ interface AuthContextType {
   login: () => Promise<void>;
   logout: () => Promise<void>;
   isApproved: boolean;
+  googleAccessToken: string | null;
+  reconnectGoogle: () => Promise<string | null>;
 }
 
 const AuthContext = createContext<AuthContextType>({
@@ -19,12 +21,15 @@ const AuthContext = createContext<AuthContextType>({
   login: async () => {},
   logout: async () => {},
   isApproved: false,
+  googleAccessToken: null,
+  reconnectGoogle: async () => null,
 });
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [role, setRole] = useState<'admin' | 'user' | null>(null);
   const [loading, setLoading] = useState(true);
+  const [googleAccessToken, setGoogleAccessToken] = useState<string | null>(() => localStorage.getItem('googleAccessToken'));
 
   useEffect(() => {
     const unsubscribeAuth = onAuthStateChanged(auth, async (currentUser) => {
@@ -69,6 +74,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       } else {
         setRole(null);
+        setGoogleAccessToken(null);
         setLoading(false);
       }
     });
@@ -78,18 +84,40 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const login = async () => {
     try {
-      await signInWithPopup(auth, googleProvider);
+      const result = await signInWithPopup(auth, googleProvider);
+      const credential = GoogleAuthProvider.credentialFromResult(result);
+      if (credential?.accessToken) {
+        setGoogleAccessToken(credential.accessToken);
+        localStorage.setItem('googleAccessToken', credential.accessToken);
+      }
     } catch (err) {
       console.error(err);
     }
   };
 
+  const reconnectGoogle = async () => {
+    try {
+      const result = await signInWithPopup(auth, googleProvider);
+      const credential = GoogleAuthProvider.credentialFromResult(result);
+      if (credential?.accessToken) {
+        setGoogleAccessToken(credential.accessToken);
+        localStorage.setItem('googleAccessToken', credential.accessToken);
+        return credential.accessToken;
+      }
+    } catch (err) {
+      console.error(err);
+    }
+    return null;
+  };
+
   const logout = async () => {
+    setGoogleAccessToken(null);
+    localStorage.removeItem('googleAccessToken');
     await signOut(auth);
   };
 
   return (
-    <AuthContext.Provider value={{ user, role, loading, login, logout, isApproved: role !== null }}>
+    <AuthContext.Provider value={{ user, role, loading, login, logout, isApproved: role !== null, googleAccessToken, reconnectGoogle }}>
       {children}
     </AuthContext.Provider>
   );

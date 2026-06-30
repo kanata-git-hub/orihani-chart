@@ -3,7 +3,8 @@ import { FollowUpData } from '../types';
 
 export const getInitialFollowUpData = (): FollowUpData => ({
   briefing: {
-    gender: '무관',
+    patientName: '',
+    gender: '',
     age: '',
     mainSymptom: '',
     patientPattern: '',
