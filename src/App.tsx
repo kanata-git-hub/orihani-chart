@@ -67,13 +67,12 @@ function MainApp() {
   };
 
   const confirmGlobalReset = () => {
-    // Reset all tabs both in local state and follow ups
-    resetAllTabs();
-    
-    // As FollowUp is managed by another hook without context, we can clear its storage directly
-    // Then we trigger a re-render or just let the resetAllTabs do its job and reload to apply to FollowUp
-    localStorage.removeItem('patientData');
-    localStorage.removeItem('followUpData');
+    if (appMode === 'INITIAL') {
+      resetAllTabs();
+      localStorage.removeItem('patientData');
+    } else {
+      localStorage.removeItem('followUpData');
+    }
     window.location.reload();
   };
 
@@ -193,8 +192,10 @@ function MainApp() {
       <ResetModal 
         isOpen={isGlobalResetModalOpen}
         activeTab={activeTab} // Not actually used by title/message since we override them
-        title="모든 환자 데이터 전체 초기화"
-        message="환자 1부터 10까지의 모든 초진 차트 및 처방 재평가 데이터가 완전히 삭제됩니다. 정말 초기화하시겠습니까?"
+        title={appMode === 'INITIAL' ? "초진 차트 전체 초기화" : "처방 재평가 전체 초기화"}
+        message={appMode === 'INITIAL' 
+          ? "환자 1부터 10까지의 모든 초진 차트 데이터가 완전히 삭제됩니다. 정말 초기화하시겠습니까?" 
+          : "환자 1부터 10까지의 모든 처방 재평가 데이터가 완전히 삭제됩니다. 정말 초기화하시겠습니까?"}
         onClose={() => setIsGlobalResetModalOpen(false)}
         onConfirm={confirmGlobalReset}
       />
