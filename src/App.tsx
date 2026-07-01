@@ -17,6 +17,7 @@ import { PatientBriefingForm } from './components/PatientBriefingForm';
 import { AnalysisOutput } from './components/AnalysisOutput';
 import { ResetModal } from './components/ResetModal';
 import { FollowUpTab } from './components/FollowUpTab';
+import { PWAInstaller } from './components/PWAInstaller';
 
 type AppMode = 'INITIAL' | 'FOLLOW_UP';
 
@@ -220,19 +221,22 @@ function MainApp() {
 
 export default function App() {
   return (
-    <Routes>
-      <Route path="/login" element={<LoginPage />} />
-      <Route path="/unauthorized" element={<UnauthorizedPage />} />
-      <Route path="/admin" element={
-        <ProtectedRoute requireAdmin={true}>
-          <AdminPage />
-        </ProtectedRoute>
-      } />
-      <Route path="/" element={
-        <ProtectedRoute>
-          <MainApp />
-        </ProtectedRoute>
-      } />
-    </Routes>
+    <>
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/unauthorized" element={<UnauthorizedPage />} />
+        <Route path="/admin" element={
+          <ProtectedRoute requireAdmin={true}>
+            <AdminPage />
+          </ProtectedRoute>
+        } />
+        <Route path="/" element={
+          <ProtectedRoute>
+            <MainApp />
+          </ProtectedRoute>
+        } />
+      </Routes>
+      <PWAInstaller />
+    </>
   );
 }

@@ -8,8 +8,13 @@
   "description": "한의원 원장님을 위한 AI 환자 진찰 및 차트 자동 완성 어시스턴트",
   "icons": [
     {
-      "src": "/src/image/persona.png",
+      "src": "/icon-192.png",
       "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
       "type": "image/png"
     }
   ]

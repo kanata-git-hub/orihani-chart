@@ -9,8 +9,8 @@ export const SplashScreen: React.FC = () => {
     >
       <img src={personaImg} alt="오리 차트" className="w-[250px] h-[250px] object-contain" />
       <h1 
-        className="mt-[24px] text-[32px] font-bold text-[#1a1a1a] mb-0"
-        style={{ fontFamily: "system-ui, -apple-system, sans-serif" }}
+        className="mt-[24px] text-[32px] font-bold text-[#552c24] mb-0"
+        style={{ fontFamily: "'KyoboHandwriting', system-ui, -apple-system, sans-serif" }}
       >
         오리 차트
       </h1>
