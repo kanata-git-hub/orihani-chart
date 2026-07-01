@@ -126,7 +126,7 @@ export const AnalysisOutput: React.FC<AnalysisOutputProps> = ({ result }) => {
         {result.consultationFeedback && (
           <div className="bg-white text-primary border border-primary/20 p-6 shadow-xl rounded-sm h-full">
             <div className="flex items-center gap-3 mb-4 border-b border-primary/10 pb-2">
-              <img src="/icon.png" alt="AI 도우미" className="w-10 h-10 object-contain" />
+              <img src="/icon.png?v=2" alt="AI 도우미" className="w-10 h-10 object-contain" />
               <h3 className="font-serif text-xl font-bold text-primary">신뢰 구축 가이드</h3>
             </div>
             <div className="text-lg text-primary leading-relaxed whitespace-pre-wrap font-medium bg-bg-input p-4 rounded-lg border border-primary/10">

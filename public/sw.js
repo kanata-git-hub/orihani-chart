@@ -1,4 +1,4 @@
-const CACHE_NAME = 'ori-chart-v3';
+const CACHE_NAME = 'ori-chart-v4';
 const urlsToCache = [
   '/',
   '/index.html',

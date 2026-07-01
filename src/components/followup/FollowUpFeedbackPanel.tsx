@@ -20,7 +20,7 @@ export const FollowUpFeedbackPanel: React.FC<Props> = ({
     <div className="w-full h-full bg-white text-primary border border-primary/20 p-6 shadow-xl rounded-sm flex flex-col">
       <div className="flex items-center justify-between mb-4 border-b border-primary/10 pb-2 shrink-0">
         <div className="flex items-center gap-3">
-          <img src="/icon.png" alt="AI 도우미" className="w-10 h-10 object-contain" />
+          <img src="/icon.png?v=2" alt="AI 도우미" className="w-10 h-10 object-contain" />
           <h3 className="font-serif text-xl font-bold text-primary">2. 이전 처방 코멘트</h3>
         </div>
         <button
