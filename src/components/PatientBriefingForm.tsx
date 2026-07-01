@@ -107,7 +107,7 @@ export const PatientBriefingForm: React.FC<PatientBriefingFormProps> = ({
           <p className="text-sm font-bold opacity-70 mt-2">* 진료 음성을 첨부하시면 대화 내용을 바탕으로 차트가 자동 완성되며, 환자와의 '신뢰 구축 가이드'를 함께 받아보실 수 있습니다.</p>
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <label className="block text-base font-bold text-primary mb-1">성별</label>
             <div className="flex gap-2">
@@ -115,7 +115,7 @@ export const PatientBriefingForm: React.FC<PatientBriefingFormProps> = ({
                 <button
                   key={g}
                   onClick={() => onFieldChange('gender', g)}
-                  className={`flex-1 py-3 text-base font-bold border border-primary transition-colors ${
+                  className={`flex-1 py-3 text-base font-bold border border-primary transition-colors touch-target ${
                     briefing.gender === g ? 'bg-accent text-primary' : 'bg-bg-input text-primary'
                   }`}
                 >

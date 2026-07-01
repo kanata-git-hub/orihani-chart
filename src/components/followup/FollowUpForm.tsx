@@ -51,18 +51,18 @@ export const FollowUpForm: React.FC<FollowUpFormProps> = ({
         <h2 className="text-xl font-bold mb-4">1. 환자 정보</h2>
         
         <div className="space-y-4">
-          <div className="flex gap-4">
-            <div className="w-1/3">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
               <InputField label={<span className="text-[#a52a2a]">성함 (검색용)</span>} name="patientName" value={briefing.patientName || ''} onChange={(e) => onUpdateBriefing('patientName', e.target.value)} placeholder="예: 홍길동" />
             </div>
-            <div className="w-1/3">
+            <div>
               <label className="block text-sm font-bold mb-1 text-[#a52a2a]">성별 (검색용)</label>
               <div className="flex gap-2">
                 {['남', '여'].map((g) => (
                   <button
                     key={g}
                     onClick={() => onUpdateBriefing('gender', g)}
-                    className={`flex-1 py-2 text-sm font-bold border border-primary transition-colors cursor-pointer ${
+                    className={`flex-1 py-2 text-sm font-bold border border-primary transition-colors cursor-pointer touch-target ${
                       briefing.gender === g ? 'bg-accent text-primary' : 'bg-white text-primary'
                     }`}
                   >
@@ -71,7 +71,7 @@ export const FollowUpForm: React.FC<FollowUpFormProps> = ({
                 ))}
               </div>
             </div>
-            <div className="w-1/3">
+            <div>
               <InputField label="나이 (선택, 분석용)" name="age" value={briefing.age} onChange={(e) => onUpdateBriefing('age', e.target.value)} placeholder="예: 45세" />
             </div>
           </div>

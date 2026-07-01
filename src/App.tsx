@@ -115,10 +115,22 @@ function MainApp() {
         <Header activeTab={activeTab} setActiveTab={setActiveTab} onResetAll={() => setIsGlobalResetModalOpen(true)} />
         
         {/* Mobile App Mode Toggle */}
-        <div className="flex justify-center gap-2 mb-6 lg:hidden">
+        <div className="grid grid-cols-2 gap-2 mb-6 lg:hidden">
+          <button 
+            onClick={() => setAppMode('INITIAL')}
+            className={`py-3 px-2 border-2 border-primary font-bold text-sm transition-colors flex items-center justify-center touch-target ${appMode === 'INITIAL' ? 'bg-accent text-primary shadow-[4px_4px_0px_0px_rgba(85,44,36,1)]' : 'bg-white text-primary'}`}
+          >
+            초진 차트
+          </button>
+          <button 
+            onClick={() => setAppMode('FOLLOW_UP')}
+            className={`py-3 px-2 border-2 border-primary font-bold text-sm transition-colors flex items-center justify-center touch-target ${appMode === 'FOLLOW_UP' ? 'bg-accent text-primary shadow-[4px_4px_0px_0px_rgba(85,44,36,1)]' : 'bg-white text-primary'}`}
+          >
+            처방 재평가
+          </button>
           <button 
             onClick={logout}
-            className="py-3 px-4 border-2 border-primary font-bold text-sm transition-colors bg-white text-primary whitespace-nowrap"
+            className="py-3 px-2 border-2 border-primary font-bold text-sm transition-colors bg-white text-primary flex items-center justify-center touch-target col-span-1"
             title="로그아웃"
           >
             로그아웃
@@ -126,23 +138,11 @@ function MainApp() {
           {isAdmin && (
             <button 
               onClick={() => navigate('/admin')}
-              className="flex-1 py-3 border-2 border-primary font-bold text-sm lg:text-lg transition-colors bg-white text-primary"
+              className="py-3 px-2 border-2 border-primary font-bold text-sm transition-colors bg-white text-primary flex items-center justify-center touch-target col-span-1"
             >
               관리
             </button>
           )}
-          <button 
-            onClick={() => setAppMode('INITIAL')}
-            className={`flex-1 py-3 border-2 border-primary font-bold text-sm lg:text-lg transition-colors ${appMode === 'INITIAL' ? 'bg-accent text-primary shadow-[4px_4px_0px_0px_rgba(85,44,36,1)]' : 'bg-white text-primary'}`}
-          >
-            초진 차트
-          </button>
-          <button 
-            onClick={() => setAppMode('FOLLOW_UP')}
-            className={`flex-1 py-3 border-2 border-primary font-bold text-sm lg:text-lg transition-colors ${appMode === 'FOLLOW_UP' ? 'bg-accent text-primary shadow-[4px_4px_0px_0px_rgba(85,44,36,1)]' : 'bg-white text-primary'}`}
-          >
-            처방 재평가
-          </button>
         </div>
 
         {appMode === 'INITIAL' ? (

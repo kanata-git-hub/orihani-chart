@@ -62,3 +62,40 @@ body {
   font-weight: 900;
   color: #a52a2a; /* Make bold text pop a bit more with a reddish-brown */
 }
+
+/* Touch-friendly Global Styles */
+button,
+a,
+[role="button"],
+.touch-target {
+  min-height: 44px;
+  min-width: 44px;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+input:not([type="radio"]):not([type="checkbox"]),
+select,
+textarea {
+  min-height: 44px;
+}
+
+button:active,
+a:active,
+[role="button"]:active {
+  transform: scale(0.98);
+  opacity: 0.9;
+  transition: transform 0.1s ease, opacity 0.1s ease;
+}
+
+/* Hide scrollbar for Chrome, Safari and Opera */
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+/* Hide scrollbar for IE, Edge and Firefox */
+.scrollbar-hide {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
+}

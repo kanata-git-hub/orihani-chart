@@ -13,18 +13,18 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab, onReset
       <div className="flex items-center gap-4">
         <img src={personaImg} alt="AI 도우미" className="w-16 h-16 object-contain" />
         <div>
-          <h1 className="text-4xl font-bold tracking-tight">오리한의원 차트 AI</h1>
+          <h1 className="text-4xl font-bold tracking-tight">오리 차트</h1>
           <p className="text-sm font-mono opacity-60 mt-2">AI 진단 지원 시스템 v1.2</p>
         </div>
       </div>
       
       {/* Tab Navigation */}
-      <div className="flex flex-wrap bg-white border border-primary p-1 shadow-[2px_2px_0px_0px_rgba(85,44,36,1)] flex-1 w-full md:w-auto">
+      <div className="flex bg-white border border-primary p-1 shadow-[2px_2px_0px_0px_rgba(85,44,36,1)] w-full overflow-x-auto touch-pan-x scrollbar-hide">
         {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((num) => (
           <button
             key={num}
             onClick={() => setActiveTab(num)}
-            className={`px-3 py-2 text-sm sm:text-base font-bold font-mono uppercase transition-all flex-1 text-center min-w-[60px] ${
+            className={`whitespace-nowrap px-4 py-3 text-sm sm:text-base font-bold font-mono uppercase transition-all shrink-0 text-center min-w-[70px] touch-target ${
               activeTab === num 
                 ? 'bg-accent text-primary' 
                 : 'text-primary hover:bg-primary/5'
@@ -36,7 +36,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab, onReset
         {onResetAll && (
           <button
             onClick={onResetAll}
-            className="px-3 py-2 text-sm sm:text-base font-bold font-mono uppercase transition-all flex-1 text-center min-w-[80px] bg-red-50 text-red-600 hover:bg-red-100 border-l border-primary/20"
+            className="whitespace-nowrap px-4 py-3 text-sm sm:text-base font-bold font-mono uppercase transition-all shrink-0 text-center min-w-[90px] bg-red-50 text-red-600 hover:bg-red-100 border-l border-primary/20 touch-target"
             title="모든 환자 탭 데이터 초기화"
           >
             전체 리셋

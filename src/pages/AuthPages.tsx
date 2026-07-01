@@ -1,11 +1,12 @@
 import React from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useNavigate, Navigate } from 'react-router-dom';
+import { SplashScreen } from '../components/SplashScreen';
 
 export const LoginPage: React.FC = () => {
   const { login, user, loading } = useAuth();
 
-  if (loading) return null;
+  if (loading) return <SplashScreen />;
 
   if (user) {
     return <Navigate to="/" replace />;
