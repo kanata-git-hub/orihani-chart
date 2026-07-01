@@ -5,7 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <meta name="theme-color" content="#4a5d23" />
     <link rel="manifest" href="/manifest.json" />
-    <link rel="icon" type="image/png" href="/src/image/persona.png" />
+    <link rel="icon" type="image/png" href="/icon.png" />
+    <link rel="apple-touch-icon" href="/icon.png" />
     <title>오리 차트</title>
     <style>
       @font-face {
@@ -18,12 +19,18 @@
   </head>
   <body>
     <div id="root">
-      <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; width: 100vw; height: 100vh; background-color: #ffffff; margin: 0; padding: 0; position: fixed; top: 0; left: 0; z-index: 9999;">
+      <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; width: 100vw; height: 100vh; background-color: #fdfbf7; margin: 0; padding: 0; position: fixed; top: 0; left: 0; z-index: 9999;">
         <img src="/src/image/persona.png" alt="오리 차트" style="width: 250px; height: 250px; object-fit: contain;" />
         <h1 style="margin-top: 24px; font-size: 32px; font-weight: 700; color: #552c24; font-family: 'KyoboHandwriting', system-ui, -apple-system, sans-serif; margin-bottom: 0;">오리 차트</h1>
       </div>
     </div>
     <script>
+      window.deferredPWAInstallPrompt = null;
+      window.addEventListener('beforeinstallprompt', (e) => {
+        e.preventDefault();
+        window.deferredPWAInstallPrompt = e;
+      });
+
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
           navigator.serviceWorker.register('/sw.js').then(registration => {

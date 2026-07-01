@@ -14,6 +14,12 @@ export const PWAInstaller: React.FC = () => {
 
   useEffect(() => {
     // Android Install Prompt
+    // Check if event was already captured
+    if ((window as any).deferredPWAInstallPrompt) {
+      setDeferredPrompt((window as any).deferredPWAInstallPrompt);
+      setShowAndroidPrompt(true);
+    }
+
     const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
       setDeferredPrompt(e as BeforeInstallPromptEvent);
