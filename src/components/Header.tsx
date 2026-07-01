@@ -1,5 +1,4 @@
 import React from 'react';
-import personaImg from '../image/persona.png';
 
 interface HeaderProps {
   activeTab: number;
@@ -11,7 +10,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab, onReset
   return (
     <header className="mb-6 border-b border-primary pb-4 flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
       <div className="flex items-center gap-4 shrink-0">
-        <img src={personaImg} alt="AI 도우미" className="w-16 h-16 object-contain shrink-0" />
+        <img src="/icon.png" alt="AI 도우미" className="w-16 h-16 object-contain shrink-0" />
         <div className="shrink-0">
           <h1 className="text-4xl font-bold tracking-tight whitespace-nowrap">오리 차트</h1>
           <p className="text-sm font-mono opacity-60 mt-2 whitespace-nowrap">AI 진단 지원 시스템 v1.2</p>
