@@ -18,6 +18,7 @@ import { AnalysisOutput } from './components/AnalysisOutput';
 import { ResetModal } from './components/ResetModal';
 import { FollowUpTab } from './components/FollowUpTab';
 import { PWAInstaller } from './components/PWAInstaller';
+import { initialBriefing } from './constants';
 
 type AppMode = 'INITIAL' | 'FOLLOW_UP';
 
@@ -43,8 +44,9 @@ function MainApp() {
   const [error, setError] = useState<string | null>(null);
   const [resetCounter, setResetCounter] = useState(0);
 
-  const briefing = patientData[activeTab].briefing;
-  const result = patientData[activeTab].result;
+  const currentPatient = patientData[activeTab] || { briefing: { ...initialBriefing }, result: null };
+  const briefing = currentPatient.briefing;
+  const result = currentPatient.result;
 
   const handleGenerateChart = async (audioData?: { mimeType: string, data: string }) => {
     setIsLoading(true);

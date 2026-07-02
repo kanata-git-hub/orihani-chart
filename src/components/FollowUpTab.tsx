@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { FollowUpRecord } from '../types';
 import { generateFollowUpAnalysis } from '../services/aiService';
 import { generateFollowUpInitialPrompt } from '../services/prompts';
-import { useFollowUpData } from '../hooks/useFollowUpData';
+import { useFollowUpData, getInitialFollowUpData } from '../hooks/useFollowUpData';
 import { useAuth } from '../contexts/AuthContext';
 
 import { ResetModal } from './ResetModal';
@@ -19,17 +19,20 @@ export const FollowUpTab: React.FC<{ activeTab: number }> = ({ activeTab }) => {
   const [isResetModalOpen, setIsResetModalOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const data = followUpData[activeTab];
+  const data = followUpData[activeTab] || getInitialFollowUpData();
   const { patientName, gender, age, mainSymptom, patientPattern, memo, records } = data.briefing;
 
   const updateBriefing = (field: keyof typeof data.briefing, value: any) => {
-    setFollowUpData(prev => ({
-      ...prev,
-      [activeTab]: {
-        ...prev[activeTab],
-        briefing: { ...prev[activeTab].briefing, [field]: value }
-      }
-    }));
+    setFollowUpData(prev => {
+      const currentTab = prev[activeTab] || getInitialFollowUpData();
+      return {
+        ...prev,
+        [activeTab]: {
+          ...currentTab,
+          briefing: { ...currentTab.briefing, [field]: value }
+        }
+      };
+    });
   };
 
   const handleImportFromSheets = async () => {

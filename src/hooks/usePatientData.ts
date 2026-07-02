@@ -45,20 +45,26 @@ export const usePatientData = () => {
   }, [activeTab]);
 
   const updateBriefingField = (tab: number, name: keyof PatientBriefing, value: any) => {
-    setPatientData(prev => ({
-      ...prev,
-      [tab]: {
-        ...prev[tab],
-        briefing: { ...prev[tab].briefing, [name]: value }
-      }
-    }));
+    setPatientData(prev => {
+      const currentTab = prev[tab] || { briefing: { ...initialBriefing }, result: null };
+      return {
+        ...prev,
+        [tab]: {
+          ...currentTab,
+          briefing: { ...currentTab.briefing, [name]: value }
+        }
+      };
+    });
   };
 
   const updateResult = (tab: number, result: any) => {
-    setPatientData(prev => ({
-      ...prev,
-      [tab]: { ...prev[tab], result }
-    }));
+    setPatientData(prev => {
+      const currentTab = prev[tab] || { briefing: { ...initialBriefing }, result: null };
+      return {
+        ...prev,
+        [tab]: { ...currentTab, result }
+      };
+    });
   };
 
   const resetTab = (tab: number) => {
