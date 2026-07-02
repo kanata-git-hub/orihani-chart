@@ -125,7 +125,123 @@ app.post("/api/generate-followup", async (req, res) => {
             contents: [{ role: 'user', parts: [{ text: prompt }] }],
           }), 2, 2000
         );
-        return res.json({ text: response.text || '' });
+        let text = response.text || '';
+        
+        // JSON 파싱 및 구글 스크립트 웹훅 연동 로직
+        let rawJson = null;
+        
+        const codeBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+        if (codeBlockMatch) {
+          rawJson = codeBlockMatch[1];
+          // 원본 텍스트에서 JSON 부분을 완벽히 제거
+          text = text.replace(codeBlockMatch[0], '').trim();
+        } else {
+          // Robust balanced JSON extractor for fallback
+          let firstBracket = text.indexOf('[');
+          let firstBrace = text.indexOf('{');
+          if (firstBracket !== -1 || firstBrace !== -1) {
+            let isArray = firstBracket !== -1 && (firstBrace === -1 || firstBracket < firstBrace);
+            let openChar = isArray ? '[' : '{';
+            let closeChar = isArray ? ']' : '}';
+            let start = isArray ? firstBracket : firstBrace;
+            
+            let depth = 0;
+            let inString = false;
+            let escape = false;
+            let extracted = null;
+            
+            for (let i = start; i < text.length; i++) {
+              let char = text[i];
+              if (escape) { escape = false; continue; }
+              if (char === '\\') { escape = true; continue; }
+              if (char === '"') { inString = !inString; continue; }
+              if (!inString) {
+                if (char === openChar) depth++;
+                else if (char === closeChar) {
+                  depth--;
+                  if (depth === 0) {
+                    extracted = text.substring(start, i + 1);
+                    break;
+                  }
+                }
+              }
+            }
+            if (extracted) {
+              rawJson = extracted;
+              text = text.replace(extracted, '').trim();
+            }
+          }
+        }
+
+        if (rawJson) {
+          try {
+            let parsedData = JSON.parse(rawJson);
+            if (!Array.isArray(parsedData)) {
+              parsedData = [parsedData];
+            }
+            
+            console.log("Sending to Webhook:", JSON.stringify(parsedData));
+            
+            const webhookUrl = 'https://script.google.com/macros/s/AKfycbzEetbOaAPEneei0sXqDaHfTeqMaliTKlayrLzVsstzsUtqe6ErJaneytTMqwcc375A/exec';
+            const webhookRes = await fetch(webhookUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(parsedData)
+            });
+
+            if (webhookRes.ok) {
+              const responseText = await webhookRes.text();
+              
+              let webhookData;
+              try {
+                webhookData = JSON.parse(responseText);
+              } catch(e) {
+                console.error("Parse error on webhook response", e);
+                webhookData = { error: "Invalid JSON from webhook" };
+              }
+              
+              if (Array.isArray(webhookData) && webhookData.length > 0) {
+                 let hasAnyHerbs = false;
+                 webhookData.forEach((data, index) => {
+                    if (data.final_recipe && Object.keys(data.final_recipe).length > 0) {
+                        hasAnyHerbs = true;
+                        // 처방명이 있는 경우 해당 처방명을 출력
+                        const recipeNames = parsedData[index] && parsedData[index]["합방_처방"] 
+                                            ? parsedData[index]["합방_처방"].join(" + ") 
+                                            : `추천 처방 ${index + 1}`;
+                                            
+                        let markdownList = `\n\n### 🌿 [${recipeNames}] 약재 용량 (1일 기준)\n`;
+                        for (const [herb, amount] of Object.entries(data.final_recipe)) {
+                          markdownList += `- **${herb}**: ${amount}g\n`;
+                        }
+                        text += markdownList;
+                    }
+                 });
+                 if (!hasAnyHerbs) {
+                   text += `\n\n> ⚠️ **안내:** 구글 시트에서 요청한 처방명(예: ${parsedData[0] && parsedData[0]["합방_처방"] ? parsedData[0]["합방_처방"].join(", ") : "처방"})을 찾지 못해 약재 목록을 구성할 수 없습니다. 시트의 '처방명' 열에 해당 처방이 띄어쓰기 없이 정확히 입력되어 있는지 확인해주세요.`;
+                 }
+              } else if (webhookData.final_recipe && Object.keys(webhookData.final_recipe).length > 0) {
+                let markdownList = '\n\n### 🌿 추천 처방 약재 용량 (1일 기준)\n';
+                for (const [herb, amount] of Object.entries(webhookData.final_recipe)) {
+                  markdownList += `- **${herb}**: ${amount}g\n`;
+                }
+                text += markdownList;
+              } else if (webhookData.error) {
+                text += `\n\n> ⚠️ **구글 스크립트 오류:** ${webhookData.error}`;
+              } else {
+                text += `\n\n> ⚠️ **안내:** 구글 시트에서 해당 처방을 찾을 수 없습니다.`;
+              }
+            } else {
+              console.warn("Webhook returned error status:", webhookRes.status);
+              text += `\n\n> ⚠️ 약재 용량 계산 서버와 통신할 수 없거나 형식이 올바르지 않습니다. (상태 코드: ${webhookRes.status})`;
+            }
+          } catch (e) {
+            console.error("Failed to parse JSON or call webhook:", e);
+            text += `\n\n> ⚠️ 내부 서버 오류: 약재 용량을 파싱할 수 없습니다.`;
+          }
+        }
+
+        return res.json({ text });
       } catch (error: any) {
         console.warn(`FollowUp Analysis Model ${model} failed...`, error.message);
         lastError = error;
