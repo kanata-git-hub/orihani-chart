@@ -1,6 +1,7 @@
 import React from 'react';
 import { Stethoscope, Loader2, ClipboardList } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import rehypeRaw from 'rehype-raw';
 
 interface Props {
   result?: string;
@@ -27,7 +28,7 @@ export const FollowUpDiagnosisPanel: React.FC<Props> = ({
         ) : result ? (
           <div className="bg-bg-input p-4 rounded-lg border border-primary/10 min-h-full">
             <div className="markdown-body font-sans leading-relaxed text-gray-800 break-keep">
-              <ReactMarkdown>{result}</ReactMarkdown>
+              <ReactMarkdown rehypePlugins={[rehypeRaw]}>{result}</ReactMarkdown>
             </div>
           </div>
         ) : (
@@ -40,3 +41,4 @@ export const FollowUpDiagnosisPanel: React.FC<Props> = ({
     </div>
   );
 };
+

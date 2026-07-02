@@ -82,16 +82,22 @@ export const generateAIChart = async (
         if (!rawText) {
           throw new Error("Empty response from AI (possibly blocked by safety filters)");
         }
-        rawText = rawText.trim();
-        if (rawText.startsWith('```json')) {
-          rawText = rawText.substring(7);
-        } else if (rawText.startsWith('```')) {
-          rawText = rawText.substring(3);
+        
+        let parsed;
+        const codeBlockMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+        if (codeBlockMatch) {
+          parsed = JSON.parse(codeBlockMatch[1].trim());
+        } else {
+          // Fallback robust extractor
+          const firstBrace = rawText.indexOf('{');
+          const lastBrace = rawText.lastIndexOf('}');
+          if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+            parsed = JSON.parse(rawText.substring(firstBrace, lastBrace + 1));
+          } else {
+            parsed = JSON.parse(rawText.trim());
+          }
         }
-        if (rawText.endsWith('```')) {
-          rawText = rawText.substring(0, rawText.length - 3);
-        }
-        const parsed = JSON.parse(rawText.trim());
+        
         if (!parsed.chartContent && !parsed.diagnosticGuide) {
           throw new Error("AI returned empty fields in JSON");
         }
@@ -234,7 +240,7 @@ export const processWebhookResponse = async (text: string): Promise<string> => {
       let parsedData = JSON.parse(rawJson);
       if (!Array.isArray(parsedData)) parsedData = [parsedData];
       
-      const webhookUrl = 'https://script.google.com/macros/s/AKfycbzEetbOaAPEneei0sXqDaHfTeqMaliTKlayrLzVsstzsUtqe6ErJaneytTMqwcc375A/exec';
+      const webhookUrl = '/api/proxy-webhook';
       const webhookRes = await fetch(webhookUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -258,10 +264,36 @@ export const processWebhookResponse = async (text: string): Promise<string> => {
                   const recipeNames = parsedData[index] && parsedData[index]["합방_처방"] 
                                       ? parsedData[index]["합방_처방"].join(" + ") 
                                       : `추천 처방 ${index + 1}`;
-                  let markdownList = `\n\n### 🌿 [${recipeNames}] 약재 용량 (1일 기준)\n`;
-                  for (const [herb, amount] of Object.entries(data.final_recipe)) {
-                    markdownList += `- **${herb}**: ${amount as number}g\n`;
+                  let markdownList = `\n\n### 🌿 [${recipeNames}] 약재 용량\n\n`;
+                  
+                  const daysList = [1, 7, 15, 30];
+                  
+                  for (const days of daysList) {
+                    markdownList += `<details className="mb-2 bg-gray-50 p-2 rounded-md border border-gray-200 cursor-pointer">\n`;
+                    markdownList += `<summary className="font-bold text-primary select-none">${days}일 기준 약재 총량</summary>\n\n`;
+                    markdownList += `<div className="mt-2 pl-4 grid grid-cols-2 sm:grid-cols-3 gap-2">\n`;
+                    for (const [herb, amount] of Object.entries(data.final_recipe)) {
+                      const formatAmt = (amt: number, multiplier: number) => {
+                        let str = String(amt * multiplier);
+                        let dotIndex = str.indexOf('.');
+                        if (dotIndex !== -1) {
+                          let decimals = str.substring(dotIndex + 1);
+                          if (decimals.length > 2) {
+                            str = str.substring(0, dotIndex + 3);
+                          }
+                        }
+                        return Number(str) + 'g';
+                      };
+                      
+                      const baseAmt = amount as number;
+                      markdownList += `  <div className="flex justify-between items-center bg-white p-1.5 rounded shadow-sm text-sm border border-gray-100">
+    <span className="font-medium text-gray-700">${herb}</span>
+    <span className="text-gray-900">${formatAmt(baseAmt, days)}</span>
+  </div>\n`;
+                    }
+                    markdownList += `</div>\n</details>\n`;
                   }
+                  
                   text += markdownList;
               }
            });
@@ -269,10 +301,36 @@ export const processWebhookResponse = async (text: string): Promise<string> => {
              text += `\n\n> ⚠️ **안내:** 구글 시트에서 요청한 처방명(예: ${parsedData[0] && parsedData[0]["합방_처방"] ? parsedData[0]["합방_처방"].join(", ") : "처방"})을 찾지 못해 약재 목록을 구성할 수 없습니다. 시트의 '처방명' 열에 해당 처방이 띄어쓰기 없이 정확히 입력되어 있는지 확인해주세요.`;
            }
         } else if (webhookData?.final_recipe && Object.keys(webhookData.final_recipe).length > 0) {
-          let markdownList = '\n\n### 🌿 추천 처방 약재 용량 (1일 기준)\n';
-          for (const [herb, amount] of Object.entries(webhookData.final_recipe)) {
-            markdownList += `- **${herb}**: ${amount as number}g\n`;
+          let markdownList = '\n\n### 🌿 추천 처방 약재 용량\n\n';
+          
+          const daysList = [1, 7, 15, 30];
+          
+          for (const days of daysList) {
+            markdownList += `<details className="mb-2 bg-gray-50 p-2 rounded-md border border-gray-200 cursor-pointer">\n`;
+            markdownList += `<summary className="font-bold text-primary select-none">${days}일 기준 약재 총량</summary>\n\n`;
+            markdownList += `<div className="mt-2 pl-4 grid grid-cols-2 sm:grid-cols-3 gap-2">\n`;
+            for (const [herb, amount] of Object.entries(webhookData.final_recipe)) {
+              const formatAmt = (amt: number, multiplier: number) => {
+                let str = String(amt * multiplier);
+                let dotIndex = str.indexOf('.');
+                if (dotIndex !== -1) {
+                  let decimals = str.substring(dotIndex + 1);
+                  if (decimals.length > 2) {
+                    str = str.substring(0, dotIndex + 3);
+                  }
+                }
+                return Number(str) + 'g';
+              };
+              
+              const baseAmt = amount as number;
+              markdownList += `  <div className="flex justify-between items-center bg-white p-1.5 rounded shadow-sm text-sm border border-gray-100">
+    <span className="font-medium text-gray-700">${herb}</span>
+    <span className="text-gray-900">${formatAmt(baseAmt, days)}</span>
+  </div>\n`;
+            }
+            markdownList += `</div>\n</details>\n`;
           }
+          
           text += markdownList;
         } else if (webhookData?.error) {
           text += `\n\n> ⚠️ **구글 스크립트 오류:** ${webhookData.error}`;
