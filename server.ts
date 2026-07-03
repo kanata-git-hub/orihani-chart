@@ -69,7 +69,31 @@ app.post("/api/generate-chart", async (req, res) => {
                   assessmentDisease: { type: Type.STRING },
                   treatmentRecommendation: { type: Type.STRING },
                   recommendedTreatmentType: { type: Type.STRING },
-                  consultationFeedback: { type: Type.STRING }
+                  consultationFeedback: { type: Type.STRING },
+                  herbsRecipe: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        합방_처방: {
+                          type: Type.ARRAY,
+                          items: { type: Type.STRING }
+                        },
+                        가감_목록: {
+                          type: Type.ARRAY,
+                          items: {
+                            type: Type.OBJECT,
+                            properties: {
+                              약재명: { type: Type.STRING },
+                              동작: { type: Type.STRING },
+                              용량_g: { type: Type.NUMBER },
+                              남길_비율: { type: Type.NUMBER }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
                 },
                 required: ["chartContent", "diagnosticGuide", "treatmentRecommendation"]
               }
