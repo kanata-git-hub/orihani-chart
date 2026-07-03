@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { FileText, Clipboard, CheckCircle2, Stethoscope, Info, RefreshCw, MessageSquareHeart } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import rehypeRaw from 'rehype-raw';
 import { AnalysisResult } from '../types';
 import { renderWithBold, autoFormatText } from '../utils/formatUtils';
 
@@ -121,16 +123,25 @@ export const AnalysisOutput: React.FC<AnalysisOutputProps> = ({ result }) => {
         </div>
       </div>
 
-      <div className="xl:col-span-1 space-y-6">
+      <div className="xl:col-span-1 flex flex-col space-y-6 h-full">
         {/* 4. Consultation Feedback Box */}
         {result.consultationFeedback && (
-          <div className="bg-white text-primary border border-primary/20 p-6 shadow-xl rounded-sm h-full">
+          <div className="bg-white text-primary border border-primary/20 p-6 shadow-xl rounded-sm flex-shrink-0">
             <div className="flex items-center gap-3 mb-4 border-b border-primary/10 pb-2">
               <img src="/icon.png?v=2" alt="AI 도우미" className="w-10 h-10 object-contain" />
               <h3 className="font-serif text-xl font-bold text-primary">신뢰 구축 가이드</h3>
             </div>
             <div className="text-lg text-primary leading-relaxed whitespace-pre-wrap font-medium bg-bg-input p-4 rounded-lg border border-primary/10">
               {renderWithBold(result.consultationFeedback)}
+            </div>
+          </div>
+        )}
+
+        {/* 5. Herb Amounts Box */}
+        {result.herbAmountsHtml && (
+          <div className="bg-white text-primary border border-primary/20 p-6 shadow-xl rounded-sm flex-grow overflow-y-auto custom-scrollbar">
+            <div className="markdown-body font-sans text-gray-800 break-keep">
+              <ReactMarkdown rehypePlugins={[rehypeRaw]}>{result.herbAmountsHtml}</ReactMarkdown>
             </div>
           </div>
         )}

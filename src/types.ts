@@ -24,6 +24,8 @@ export interface AnalysisResult {
   treatmentRecommendation: string;
   recommendedTreatmentType?: string;
   consultationFeedback?: string;
+  herbsRecipe?: any;
+  herbAmountsHtml?: string;
 }
 
 export interface FollowUpRecord {

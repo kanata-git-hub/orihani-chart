@@ -71,7 +71,31 @@ export const generateAIChart = async (
                   assessmentDisease: { type: Type.STRING },
                   treatmentRecommendation: { type: Type.STRING },
                   recommendedTreatmentType: { type: Type.STRING },
-                  consultationFeedback: { type: Type.STRING }
+                  consultationFeedback: { type: Type.STRING },
+                  herbsRecipe: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        합방_처방: {
+                          type: Type.ARRAY,
+                          items: { type: Type.STRING }
+                        },
+                        가감_목록: {
+                          type: Type.ARRAY,
+                          items: {
+                            type: Type.OBJECT,
+                            properties: {
+                              약재명: { type: Type.STRING },
+                              동작: { type: Type.STRING },
+                              용량_g: { type: Type.NUMBER },
+                              남길_비율: { type: Type.NUMBER }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
                 },
                 required: ["chartContent", "diagnosticGuide", "treatmentRecommendation"]
               }
@@ -101,6 +125,11 @@ export const generateAIChart = async (
         if (!parsed.chartContent && !parsed.diagnosticGuide) {
           throw new Error("AI returned empty fields in JSON");
         }
+        
+        if (parsed.herbsRecipe && Array.isArray(parsed.herbsRecipe) && parsed.herbsRecipe.length > 0) {
+          parsed.herbAmountsHtml = await fetchHerbAmountsHtml(parsed.herbsRecipe);
+        }
+        
         return parsed;
       } catch (err) {
         console.warn(`Model ${model} failed. Trying next...`, err);
@@ -127,7 +156,11 @@ export const generateAIChart = async (
       throw new Error(errorData.error || `Server error: ${response.status}`);
     }
 
-    return response.json();
+    const parsed = await response.json();
+    if (parsed.herbsRecipe && Array.isArray(parsed.herbsRecipe) && parsed.herbsRecipe.length > 0) {
+      parsed.herbAmountsHtml = await fetchHerbAmountsHtml(parsed.herbsRecipe);
+    }
+    return parsed;
   }
 };
 
@@ -190,6 +223,116 @@ export const generateFollowUpAnalysis = async (
 };
 
 
+export const fetchHerbAmountsHtml = async (parsedData: any[]): Promise<string> => {
+  let html = '';
+  try {
+    const webhookUrl = '/api/proxy-webhook';
+    const webhookRes = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(parsedData)
+    });
+
+    if (webhookRes.ok) {
+      const responseText = await webhookRes.text();
+      let webhookData;
+      try {
+        webhookData = JSON.parse(responseText);
+      } catch(e) {
+        webhookData = { error: "Invalid JSON from webhook" };
+      }
+      
+      if (Array.isArray(webhookData) && webhookData.length > 0) {
+         let hasAnyHerbs = false;
+         webhookData.forEach((data: any, index: number) => {
+            if (data.final_recipe && Object.keys(data.final_recipe).length > 0) {
+                hasAnyHerbs = true;
+                const recipeNames = parsedData[index] && parsedData[index]["합방_처방"] 
+                                    ? parsedData[index]["합방_처방"].join(" + ") 
+                                    : `추천 처방 ${index + 1}`;
+                let markdownList = `\n\n### 🌿 [${recipeNames}] 약재 용량\n\n`;
+                
+                const daysList = [1, 7, 15, 30];
+                
+                for (const days of daysList) {
+                  markdownList += `<details className="mb-2 bg-gray-50 p-2 rounded-md border border-gray-200 cursor-pointer">\n`;
+                  markdownList += `<summary className="font-bold text-primary select-none">${days}일 기준 약재 총량</summary>\n\n`;
+                  markdownList += `<div className="mt-2 pl-4 grid grid-cols-2 sm:grid-cols-3 gap-2">\n`;
+                  for (const [herb, amount] of Object.entries(data.final_recipe)) {
+                    const formatAmt = (amt: number, multiplier: number) => {
+                      let str = String(amt * multiplier);
+                      let dotIndex = str.indexOf('.');
+                      if (dotIndex !== -1) {
+                        let decimals = str.substring(dotIndex + 1);
+                        if (decimals.length > 2) {
+                          str = str.substring(0, dotIndex + 3);
+                        }
+                      }
+                      return Number(str) + 'g';
+                    };
+                    
+                    const baseAmt = amount as number;
+                    markdownList += `  <div className="flex justify-between items-center bg-white p-1.5 rounded shadow-sm text-sm border border-gray-100">
+  <span className="font-medium text-gray-700">${herb}</span>
+  <span className="text-gray-900">${formatAmt(baseAmt, days)}</span>
+</div>\n`;
+                  }
+                  markdownList += `</div>\n</details>\n`;
+                }
+                
+                html += markdownList;
+            }
+         });
+         if (!hasAnyHerbs) {
+           html += `\n\n> ⚠️ **안내:** 구글 시트에서 요청한 처방명(예: ${parsedData[0] && parsedData[0]["합방_처방"] ? parsedData[0]["합방_처방"].join(", ") : "처방"})을 찾지 못해 약재 목록을 구성할 수 없습니다. 시트의 '처방명' 열에 해당 처방이 띄어쓰기 없이 정확히 입력되어 있는지 확인해주세요.`;
+         }
+      } else if (webhookData?.final_recipe && Object.keys(webhookData.final_recipe).length > 0) {
+        let markdownList = '\n\n### 🌿 추천 처방 약재 용량\n\n';
+        
+        const daysList = [1, 7, 15, 30];
+        
+        for (const days of daysList) {
+          markdownList += `<details className="mb-2 bg-gray-50 p-2 rounded-md border border-gray-200 cursor-pointer">\n`;
+          markdownList += `<summary className="font-bold text-primary select-none">${days}일 기준 약재 총량</summary>\n\n`;
+          markdownList += `<div className="mt-2 pl-4 grid grid-cols-2 sm:grid-cols-3 gap-2">\n`;
+          for (const [herb, amount] of Object.entries(webhookData.final_recipe)) {
+            const formatAmt = (amt: number, multiplier: number) => {
+              let str = String(amt * multiplier);
+              let dotIndex = str.indexOf('.');
+              if (dotIndex !== -1) {
+                let decimals = str.substring(dotIndex + 1);
+                if (decimals.length > 2) {
+                  str = str.substring(0, dotIndex + 3);
+                }
+              }
+              return Number(str) + 'g';
+            };
+            
+            const baseAmt = amount as number;
+            markdownList += `  <div className="flex justify-between items-center bg-white p-1.5 rounded shadow-sm text-sm border border-gray-100">
+  <span className="font-medium text-gray-700">${herb}</span>
+  <span className="text-gray-900">${formatAmt(baseAmt, days)}</span>
+</div>\n`;
+          }
+          markdownList += `</div>\n</details>\n`;
+        }
+        
+        html += markdownList;
+      } else if (webhookData?.error) {
+        html += `\n\n> ⚠️ **구글 스크립트 오류:** ${webhookData.error}`;
+      } else {
+        html += `\n\n> ⚠️ **안내:** 구글 시트에서 해당 처방을 찾을 수 없습니다.`;
+      }
+    } else {
+      html += `\n\n> ⚠️ 약재 용량 계산 서버와 통신할 수 없거나 형식이 올바르지 않습니다. (상태 코드: ${webhookRes.status})`;
+    }
+  } catch (e) {
+    console.error("Failed to parse JSON or call webhook:", e);
+    html += `\n\n> ⚠️ 내부 서버 오류: 약재 용량을 가져올 수 없습니다.`;
+  }
+  return html;
+};
+
 export const processWebhookResponse = async (text: string): Promise<string> => {
   let rawJson = null;
   const codeBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
@@ -239,110 +382,11 @@ export const processWebhookResponse = async (text: string): Promise<string> => {
     try {
       let parsedData = JSON.parse(rawJson);
       if (!Array.isArray(parsedData)) parsedData = [parsedData];
-      
-      const webhookUrl = '/api/proxy-webhook';
-      const webhookRes = await fetch(webhookUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(parsedData)
-      });
-
-      if (webhookRes.ok) {
-        const responseText = await webhookRes.text();
-        let webhookData;
-        try {
-          webhookData = JSON.parse(responseText);
-        } catch(e) {
-          webhookData = { error: "Invalid JSON from webhook" };
-        }
-        
-        if (Array.isArray(webhookData) && webhookData.length > 0) {
-           let hasAnyHerbs = false;
-           webhookData.forEach((data: any, index: number) => {
-              if (data.final_recipe && Object.keys(data.final_recipe).length > 0) {
-                  hasAnyHerbs = true;
-                  const recipeNames = parsedData[index] && parsedData[index]["합방_처방"] 
-                                      ? parsedData[index]["합방_처방"].join(" + ") 
-                                      : `추천 처방 ${index + 1}`;
-                  let markdownList = `\n\n### 🌿 [${recipeNames}] 약재 용량\n\n`;
-                  
-                  const daysList = [1, 7, 15, 30];
-                  
-                  for (const days of daysList) {
-                    markdownList += `<details className="mb-2 bg-gray-50 p-2 rounded-md border border-gray-200 cursor-pointer">\n`;
-                    markdownList += `<summary className="font-bold text-primary select-none">${days}일 기준 약재 총량</summary>\n\n`;
-                    markdownList += `<div className="mt-2 pl-4 grid grid-cols-2 sm:grid-cols-3 gap-2">\n`;
-                    for (const [herb, amount] of Object.entries(data.final_recipe)) {
-                      const formatAmt = (amt: number, multiplier: number) => {
-                        let str = String(amt * multiplier);
-                        let dotIndex = str.indexOf('.');
-                        if (dotIndex !== -1) {
-                          let decimals = str.substring(dotIndex + 1);
-                          if (decimals.length > 2) {
-                            str = str.substring(0, dotIndex + 3);
-                          }
-                        }
-                        return Number(str) + 'g';
-                      };
-                      
-                      const baseAmt = amount as number;
-                      markdownList += `  <div className="flex justify-between items-center bg-white p-1.5 rounded shadow-sm text-sm border border-gray-100">
-    <span className="font-medium text-gray-700">${herb}</span>
-    <span className="text-gray-900">${formatAmt(baseAmt, days)}</span>
-  </div>\n`;
-                    }
-                    markdownList += `</div>\n</details>\n`;
-                  }
-                  
-                  text += markdownList;
-              }
-           });
-           if (!hasAnyHerbs) {
-             text += `\n\n> ⚠️ **안내:** 구글 시트에서 요청한 처방명(예: ${parsedData[0] && parsedData[0]["합방_처방"] ? parsedData[0]["합방_처방"].join(", ") : "처방"})을 찾지 못해 약재 목록을 구성할 수 없습니다. 시트의 '처방명' 열에 해당 처방이 띄어쓰기 없이 정확히 입력되어 있는지 확인해주세요.`;
-           }
-        } else if (webhookData?.final_recipe && Object.keys(webhookData.final_recipe).length > 0) {
-          let markdownList = '\n\n### 🌿 추천 처방 약재 용량\n\n';
-          
-          const daysList = [1, 7, 15, 30];
-          
-          for (const days of daysList) {
-            markdownList += `<details className="mb-2 bg-gray-50 p-2 rounded-md border border-gray-200 cursor-pointer">\n`;
-            markdownList += `<summary className="font-bold text-primary select-none">${days}일 기준 약재 총량</summary>\n\n`;
-            markdownList += `<div className="mt-2 pl-4 grid grid-cols-2 sm:grid-cols-3 gap-2">\n`;
-            for (const [herb, amount] of Object.entries(webhookData.final_recipe)) {
-              const formatAmt = (amt: number, multiplier: number) => {
-                let str = String(amt * multiplier);
-                let dotIndex = str.indexOf('.');
-                if (dotIndex !== -1) {
-                  let decimals = str.substring(dotIndex + 1);
-                  if (decimals.length > 2) {
-                    str = str.substring(0, dotIndex + 3);
-                  }
-                }
-                return Number(str) + 'g';
-              };
-              
-              const baseAmt = amount as number;
-              markdownList += `  <div className="flex justify-between items-center bg-white p-1.5 rounded shadow-sm text-sm border border-gray-100">
-    <span className="font-medium text-gray-700">${herb}</span>
-    <span className="text-gray-900">${formatAmt(baseAmt, days)}</span>
-  </div>\n`;
-            }
-            markdownList += `</div>\n</details>\n`;
-          }
-          
-          text += markdownList;
-        } else if (webhookData?.error) {
-          text += `\n\n> ⚠️ **구글 스크립트 오류:** ${webhookData.error}`;
-        } else {
-          text += `\n\n> ⚠️ **안내:** 구글 시트에서 해당 처방을 찾을 수 없습니다.`;
-        }
-      } else {
-        text += `\n\n> ⚠️ 약재 용량 계산 서버와 통신할 수 없거나 형식이 올바르지 않습니다. (상태 코드: ${webhookRes.status})`;
-      }
+      const html = await fetchHerbAmountsHtml(parsedData);
+      text += html;
     } catch (e) {
-      console.error("Failed to parse JSON or call webhook:", e);
-      text += `\n\n> ⚠️ 내부 서버 오류: 약재 용량을 파싱할 수 없습니다.`;
+      console.error("Failed to parse JSON:", e);
+      text += `\n\n> ⚠️ 내부 서버 오류: JSON을 파싱할 수 없습니다.`;
     }
   }
   return text;
