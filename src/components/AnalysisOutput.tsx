@@ -87,7 +87,7 @@ export const AnalysisOutput: React.FC<AnalysisOutputProps> = ({ result }) => {
             <div className="flex flex-col items-end gap-1.5 ml-4 overflow-hidden">
               {result.matchProbability && (
                 <span className="text-base font-sans font-bold bg-accent text-primary px-2 py-1 rounded whitespace-nowrap">
-                  {result.assessmentDisease ? `${result.assessmentDisease} (일치 가능성 ${result.matchProbability})` : `일치 가능성 ${result.matchProbability}`}
+                  {result.assessmentDisease ? `${result.assessmentDisease} (가능성 ${result.matchProbability})` : `가능성 ${result.matchProbability}`}
                 </span>
               )}
               {result.matchReason && (
