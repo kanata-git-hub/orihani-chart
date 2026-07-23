@@ -48,7 +48,7 @@ app.post("/api/generate-chart", async (req, res) => {
       });
     }
 
-    const models = ["gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite"];
+    const models = ["gemini-3.1-pro-preview", "gemini-3.6-flash", "gemini-3.5-flash-lite"];
     let lastError: any;
 
     for (const model of models) {
@@ -144,7 +144,7 @@ app.post("/api/generate-followup", async (req, res) => {
     const ai = new GoogleGenAI({ apiKey });
     const { prompt } = req.body;
 
-    const models = ["gemini-3.1-pro-preview", "gemini-3-flash-preview"];
+    const models = ["gemini-3.1-pro-preview", "gemini-3.6-flash"];
     let lastError: any;
 
     for (const model of models) {
