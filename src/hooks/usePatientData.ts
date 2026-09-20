@@ -1,15 +1,18 @@
+import { scopedStorage } from '../accountStorage';
+import { auth } from '../services/firebase';
 import { useState, useEffect } from 'react';
 import { PatientBriefing, PatientData } from '../types';
 import { initialBriefing } from '../constants';
 
 export const usePatientData = () => {
+  const [storage] = useState(() => scopedStorage(localStorage, auth.currentUser?.uid || null));
   const [activeTab, setActiveTab] = useState<number>(() => {
-    const savedTab = localStorage.getItem('activeTab');
+    const savedTab = storage.getItem('activeTab');
     return savedTab ? parseInt(savedTab, 10) : 1;
   });
 
   const [patientData, setPatientData] = useState<Record<number, PatientData>>(() => {
-    const savedData = localStorage.getItem('patientData');
+    const savedData = storage.getItem('patientData');
     if (savedData) {
       try {
         return JSON.parse(savedData);
@@ -34,14 +37,14 @@ export const usePatientData = () => {
   const [isSaved, setIsSaved] = useState(false);
 
   useEffect(() => {
-    localStorage.setItem('patientData', JSON.stringify(patientData));
+    storage.setItem('patientData', JSON.stringify(patientData));
     setIsSaved(true);
     const timer = setTimeout(() => setIsSaved(false), 2000);
     return () => clearTimeout(timer);
   }, [patientData]);
 
   useEffect(() => {
-    localStorage.setItem('activeTab', activeTab.toString());
+    storage.setItem('activeTab', activeTab.toString());
   }, [activeTab]);
 
   const updateBriefingField = (tab: number, name: keyof PatientBriefing, value: any) => {

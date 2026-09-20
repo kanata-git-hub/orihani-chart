@@ -1,3 +1,5 @@
+import rehypeSanitize from 'rehype-sanitize';
+import { markdownSchema } from '../../services/markdownSafety';
 import React from 'react';
 import { Loader2, Play, Bot } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
@@ -44,7 +46,7 @@ export const FollowUpFeedbackPanel: React.FC<Props> = ({
         ) : result ? (
           <div className="bg-bg-input p-4 rounded-lg border border-primary/10 min-h-full">
             <div className="markdown-body font-sans leading-relaxed text-gray-800 break-keep">
-              <ReactMarkdown rehypePlugins={[rehypeRaw]}>{result}</ReactMarkdown>
+              <ReactMarkdown rehypePlugins={[rehypeRaw, [rehypeSanitize, markdownSchema]]}>{result}</ReactMarkdown>
             </div>
           </div>
         ) : (

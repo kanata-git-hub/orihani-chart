@@ -1,3 +1,6 @@
+import dotenv from 'dotenv';
+dotenv.config();
+import { requireUser } from './serverSecurity.ts';
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -10,6 +13,7 @@ const app = express();
 // AI Studio requires port 3000. Cloud Run provides PORT via env var (usually 8080).
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
+app.use('/api', requireUser);
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 

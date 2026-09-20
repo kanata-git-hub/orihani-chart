@@ -1,3 +1,5 @@
+import rehypeSanitize from 'rehype-sanitize';
+import { markdownSchema } from '../services/markdownSafety';
 import React, { useState } from 'react';
 import { FileText, Clipboard, CheckCircle2, Stethoscope, Info, RefreshCw, MessageSquareHeart } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
@@ -141,7 +143,7 @@ export const AnalysisOutput: React.FC<AnalysisOutputProps> = ({ result }) => {
         {result.herbAmountsHtml && (
           <div className="bg-white text-primary border border-primary/20 p-6 shadow-xl rounded-sm flex-grow overflow-y-auto custom-scrollbar">
             <div className="markdown-body font-sans text-gray-800 break-keep">
-              <ReactMarkdown rehypePlugins={[rehypeRaw]}>{result.herbAmountsHtml}</ReactMarkdown>
+              <ReactMarkdown rehypePlugins={[rehypeRaw, [rehypeSanitize, markdownSchema]]}>{result.herbAmountsHtml}</ReactMarkdown>
             </div>
           </div>
         )}

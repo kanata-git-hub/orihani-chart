@@ -1,3 +1,4 @@
+import { initializeDraftOwner, scopedStorage } from '../accountStorage';
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { User, onAuthStateChanged, signInWithPopup, signOut, GoogleAuthProvider } from 'firebase/auth';
 import { doc, getDoc, collection, query, where, getDocs } from 'firebase/firestore';
@@ -29,12 +30,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [user, setUser] = useState<User | null>(null);
   const [role, setRole] = useState<'admin' | 'user' | null>(null);
   const [loading, setLoading] = useState(true);
-  const [googleAccessToken, setGoogleAccessToken] = useState<string | null>(() => localStorage.getItem('googleAccessToken'));
+  const [googleAccessToken, setGoogleAccessToken] = useState<string | null>(null);
 
   useEffect(() => {
     const unsubscribeAuth = onAuthStateChanged(auth, async (currentUser) => {
+      try { initializeDraftOwner(localStorage, currentUser?.uid || null); } catch { /* Storage may be disabled. */ }
       setLoading(true);
       setUser(currentUser);
+      setGoogleAccessToken(scopedStorage(localStorage, currentUser?.uid || null).getItem('googleAccessToken'));
       if (currentUser) {
         if (currentUser.email === 'kanata840@gmail.com') {
           // Super admin is always an admin
@@ -88,7 +91,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const credential = GoogleAuthProvider.credentialFromResult(result);
       if (credential?.accessToken) {
         setGoogleAccessToken(credential.accessToken);
-        localStorage.setItem('googleAccessToken', credential.accessToken);
+        scopedStorage(localStorage, result.user.uid).setItem('googleAccessToken', credential.accessToken);
       }
     } catch (err) {
       console.error(err);
@@ -101,7 +104,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const credential = GoogleAuthProvider.credentialFromResult(result);
       if (credential?.accessToken) {
         setGoogleAccessToken(credential.accessToken);
-        localStorage.setItem('googleAccessToken', credential.accessToken);
+        scopedStorage(localStorage, result.user.uid).setItem('googleAccessToken', credential.accessToken);
         return credential.accessToken;
       }
     } catch (err) {
@@ -112,7 +115,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const logout = async () => {
     setGoogleAccessToken(null);
-    localStorage.removeItem('googleAccessToken');
+    scopedStorage(localStorage, auth.currentUser?.uid || null).removeItem('googleAccessToken');
     await signOut(auth);
   };
 

@@ -1,26 +1,6 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import { authFetch } from '../authFetch';
 import { PatientBriefing, AnalysisResult } from "../types";
 import { generateChartPrompt } from "./prompts";
-
-const executeWithRetry = async <T>(apiCall: () => Promise<T>, maxRetries: number = 3, baseDelayMs: number = 5000): Promise<T> => {
-  for (let i = 0; i < maxRetries; i++) {
-    try {
-      return await apiCall();
-    } catch (error: any) {
-      const errorMsg = error?.message?.toLowerCase() || '';
-      const isRateLimit = error?.status === 429 || errorMsg.includes('429') || errorMsg.includes('quota') || errorMsg.includes('rate limit');
-      
-      if (isRateLimit && i < maxRetries - 1) {
-        const waitTime = baseDelayMs * (i + 1); // 5s, 10s 대기
-        console.warn(`[API 쿼터 제한 감지] ${waitTime / 1000}초 후 재시도 합니다... (${i + 1}/${maxRetries})`);
-        await new Promise(resolve => setTimeout(resolve, waitTime));
-        continue;
-      }
-      throw error;
-    }
-  }
-  throw new Error("Maximum retries exceeded");
-};
 
 export const generateAIChart = async (
   briefing: PatientBriefing,
@@ -28,119 +8,8 @@ export const generateAIChart = async (
 ): Promise<AnalysisResult> => {
   const prompt = generateChartPrompt(briefing);
 
-  // AI Studio 환경(미리보기)에서는 process.env.GEMINI_API_KEY가 주입됩니다.
-  // Cloud Run 배포 빌드 시에는 이 값이 undefined로 치환되어 서버를 호출하게 됩니다.
-  const clientApiKey = process.env.GEMINI_API_KEY;
-
-  if (clientApiKey) {
-    console.log("[Client Mode] AI Studio 환경: 클라이언트에서 직접 생성");
-    const ai = new GoogleGenAI({ apiKey: clientApiKey });
-    
-    const contents: any[] = [{ text: prompt }];
-    if (audioData) {
-      contents.unshift({
-        inlineData: {
-          mimeType: audioData.mimeType,
-          data: audioData.data
-        }
-      });
-    }
-
-    const models = [
-      "gemini-3.1-pro-preview",
-      "gemini-3.6-flash",
-      "gemini-3.5-flash-lite"
-    ];
-
-    let lastError: any;
-    for (const model of models) {
-      try {
-        const response = await executeWithRetry(() => 
-          ai.models.generateContent({
-            model: model,
-            contents: [{ parts: contents }],
-            config: {
-              responseMimeType: "application/json",
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  chartContent: { type: Type.STRING },
-                  diagnosticGuide: { type: Type.STRING },
-                  matchProbability: { type: Type.STRING },
-                  matchReason: { type: Type.STRING },
-                  assessmentDisease: { type: Type.STRING },
-                  treatmentRecommendation: { type: Type.STRING },
-                  recommendedTreatmentType: { type: Type.STRING },
-                  consultationFeedback: { type: Type.STRING },
-                  herbsRecipe: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        합방_처방: {
-                          type: Type.ARRAY,
-                          items: { type: Type.STRING }
-                        },
-                        가감_목록: {
-                          type: Type.ARRAY,
-                          items: {
-                            type: Type.OBJECT,
-                            properties: {
-                              약재명: { type: Type.STRING },
-                              동작: { type: Type.STRING },
-                              용량_g: { type: Type.NUMBER },
-                              남길_비율: { type: Type.NUMBER }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                },
-                required: ["chartContent", "diagnosticGuide", "treatmentRecommendation"]
-              }
-            }
-          })
-        );
-        let rawText = response.text || '';
-        if (!rawText) {
-          throw new Error("Empty response from AI (possibly blocked by safety filters)");
-        }
-        
-        let parsed;
-        const codeBlockMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-        if (codeBlockMatch) {
-          parsed = JSON.parse(codeBlockMatch[1].trim());
-        } else {
-          // Fallback robust extractor
-          const firstBrace = rawText.indexOf('{');
-          const lastBrace = rawText.lastIndexOf('}');
-          if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-            parsed = JSON.parse(rawText.substring(firstBrace, lastBrace + 1));
-          } else {
-            parsed = JSON.parse(rawText.trim());
-          }
-        }
-        
-        if (!parsed.chartContent && !parsed.diagnosticGuide) {
-          throw new Error("AI returned empty fields in JSON");
-        }
-        
-        if (parsed.herbsRecipe && Array.isArray(parsed.herbsRecipe) && parsed.herbsRecipe.length > 0) {
-          parsed.herbAmountsHtml = await fetchHerbAmountsHtml(parsed.herbsRecipe);
-        }
-        
-        return parsed;
-      } catch (err) {
-        console.warn(`Model ${model} failed. Trying next...`, err);
-        lastError = err;
-      }
-    }
-    throw lastError;
-
-  } else {
     console.log("[Server Mode] 배포 환경: 백엔드 API를 통해 생성");
-    const response = await fetch('/api/generate-chart', {
+    const response = await authFetch('/api/generate-chart', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -161,47 +30,12 @@ export const generateAIChart = async (
       parsed.herbAmountsHtml = await fetchHerbAmountsHtml(parsed.herbsRecipe);
     }
     return parsed;
-  }
 };
 
 export const generateFollowUpAnalysis = async (
   prompt: string
 ): Promise<string> => {
-  const clientApiKey = process.env.GEMINI_API_KEY;
-
-  if (clientApiKey) {
-    const ai = new GoogleGenAI({ apiKey: clientApiKey });
-    const models = [
-      "gemini-3.1-pro-preview",
-      "gemini-3.6-flash"
-    ];
-
-    let lastError: any;
-    for (const model of models) {
-      try {
-        const response = await executeWithRetry(() =>
-          ai.models.generateContent({
-            model: model,
-            contents: [{ role: 'user', parts: [{ text: prompt }] }],
-          })
-        , 2, 2000);
-        const textResult = response.text || '';
-        return await processWebhookResponse(textResult);
-      } catch (error: any) {
-        console.warn(`[FollowUp Analysis] Model ${model} failed. Trying fallback...`, error);
-        lastError = error;
-      }
-    }
-
-    console.error("FollowUp Analysis final error:", lastError);
-    const isRateLimit = lastError?.status === 429 || lastError?.message?.toLowerCase().includes('quota');
-    if (isRateLimit) {
-      throw new Error("QUOTA_EXCEEDED");
-    }
-    throw lastError;
-
-  } else {
-    const response = await fetch('/api/generate-followup', {
+    const response = await authFetch('/api/generate-followup', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -219,7 +53,6 @@ export const generateFollowUpAnalysis = async (
 
     const data = await response.json();
     return data.text;
-  }
 };
 
 
@@ -227,7 +60,7 @@ export const fetchHerbAmountsHtml = async (parsedData: any[]): Promise<string> =
   let html = '';
   try {
     const webhookUrl = '/api/proxy-webhook';
-    const webhookRes = await fetch(webhookUrl, {
+    const webhookRes = await authFetch(webhookUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(parsedData)

@@ -1,3 +1,5 @@
+import { scopedStorage } from '../accountStorage';
+import { auth } from '../services/firebase';
 import { useState, useEffect } from 'react';
 import { FollowUpData } from '../types';
 
@@ -14,8 +16,9 @@ export const getInitialFollowUpData = (): FollowUpData => ({
 });
 
 export const useFollowUpData = () => {
+  const [storage] = useState(() => scopedStorage(localStorage, auth.currentUser?.uid || null));
   const [followUpData, setFollowUpData] = useState<Record<number, FollowUpData>>(() => {
-    const savedData = localStorage.getItem('followUpData');
+    const savedData = storage.getItem('followUpData');
     if (savedData) {
       try {
         return JSON.parse(savedData);
@@ -40,7 +43,7 @@ export const useFollowUpData = () => {
   const [isFollowUpSaved, setIsFollowUpSaved] = useState(false);
 
   useEffect(() => {
-    localStorage.setItem('followUpData', JSON.stringify(followUpData));
+    storage.setItem('followUpData', JSON.stringify(followUpData));
     setIsFollowUpSaved(true);
     const timer = setTimeout(() => setIsFollowUpSaved(false), 2000);
     return () => clearTimeout(timer);
