@@ -1,3 +1,4 @@
+import { authFetch } from '../authFetch';
 import React, { useState } from 'react';
 import { FollowUpRecord } from '../types';
 import { generateFollowUpAnalysis } from '../services/aiService';
@@ -52,7 +53,7 @@ export const FollowUpTab: React.FC<{ activeTab: number }> = ({ activeTab }) => {
 
     setIsImporting(true);
     try {
-      const response = await fetch('/api/fetch-google-sheet', {
+      const response = await authFetch('/api/fetch-google-sheet', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

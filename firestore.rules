@@ -3,10 +3,10 @@ service cloud.firestore {
   match /databases/{database}/documents {
     match /{document=**} { allow read, write: if false; }
 
-    function isSignedIn() { return request.auth != null; }
+    function isSignedIn() { return request.auth != null && request.auth.token.email_verified == true; }
     // We only require email, mostly because popup doesn't always guarantee email_verified true out of the box in emulator tests 
     // but in prod Google Auth it is true. Let's make it more robust.
-    function isSuperAdmin() { return isSignedIn() && request.auth.token.email == 'kanata840@gmail.com'; }
+    function isSuperAdmin() { return isSignedIn() && request.auth.token.email == 'kanata840@gmail.com' && request.auth.token.email_verified == true; }
     function isAdmin() {
       return isSuperAdmin() || 
         (isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.token.email)) && get(/databases/$(database)/documents/users/$(request.auth.token.email)).data.role == 'admin');
