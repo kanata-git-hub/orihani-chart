@@ -1,6 +1,6 @@
 import { authFetch } from '../authFetch';
 import React, { useState } from 'react';
-import { FollowUpRecord } from '../types';
+import { FollowUpRecord, FollowUpEngine } from '../types';
 import { generateFollowUpAnalysis } from '../services/aiService';
 import { generateFollowUpInitialPrompt } from '../services/prompts';
 import { useFollowUpData, getInitialFollowUpData } from '../hooks/useFollowUpData';
@@ -16,11 +16,16 @@ export const FollowUpTab: React.FC<{ activeTab: number }> = ({ activeTab }) => {
   const { followUpData, setFollowUpData, resetFollowUpTab, isFollowUpSaved } = useFollowUpData();
   const { googleAccessToken, reconnectGoogle } = useAuth();
   const [isLoading, setIsLoading] = useState(false);
+  const [runningEngine, setRunningEngine] = useState<FollowUpEngine | null>(null);
   const [isImporting, setIsImporting] = useState(false);
   const [isResetModalOpen, setIsResetModalOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const data = followUpData[activeTab] || getInitialFollowUpData();
+  const selectedEngine = data.selectedEngine === 'gpt-astra' ? 'gpt-astra' : 'gemini';
+  const selectEngine = (engine: FollowUpEngine) => {
+    setFollowUpData(prev => ({ ...prev, [activeTab]: { ...prev[activeTab], selectedEngine: engine } }));
+  };
   const { patientName, gender, age, mainSymptom, patientPattern, memo, records } = data.briefing;
 
   const updateBriefing = (field: keyof typeof data.briefing, value: any) => {
@@ -189,27 +194,43 @@ export const FollowUpTab: React.FC<{ activeTab: number }> = ({ activeTab }) => {
       return;
     }
     
+    if (isLoading) return;
     setIsLoading(true);
+    setRunningEngine(selectedEngine);
     const initialPrompt = generateFollowUpInitialPrompt(gender, age, mainSymptom, patientPattern, memo, records);
     
     try {
-      const responseText = await generateFollowUpAnalysis(initialPrompt);
+      const result = await generateFollowUpAnalysis(initialPrompt, selectedEngine);
       
       setFollowUpData(prev => ({
         ...prev,
         [activeTab]: {
           ...prev[activeTab],
-          analysisResult: responseText
+          analysisResult: result.text,
+          resultEngine: result.engine,
+          resultModel: result.model
         }
       }));
     } catch (error: any) {
       if (error?.message === "QUOTA_EXCEEDED") {
-        setErrorMessage("API 호출 한도(Quota)를 일시적으로 초과했습니다.\n\n시스템이 자동으로 대기 후 재시도했으나 실패했습니다.\n잠시 후 다시 시도해주세요.");
+        setErrorMessage("API 호출 한도(Quota)를 일시적으로 초과했습니다.\n\n잠시 후 다시 시도하거나 다른 분석 엔진을 선택해주세요.");
       } else {
-        setErrorMessage("분석 중 오류가 발생했습니다.\nAPI 키 설정이나 네트워크 상태를 확인해주세요.");
+        const messages: Record<string, string> = {
+          OPENAI_NOT_CONFIGURED: '오리차트 서버에 OpenAI API 키가 아직 연결되지 않았습니다. 서버의 OPENAI_API_KEY 설정이 필요합니다.',
+          OPENAI_ACCESS_DENIED: 'OpenAI API 키 또는 GPT Astra 사용 권한을 확인해주세요.',
+          ASTRA_UNAVAILABLE: '현재 OpenAI 계정에서 GPT Astra 모델을 사용할 수 없습니다.',
+          GEMINI_NOT_CONFIGURED: '오리차트 서버에 Gemini API 키가 설정되지 않았습니다.',
+          ANALYSIS_TIMEOUT: '분석 응답 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.',
+          INCOMPLETE_AI_RESPONSE: '분석 응답이 끝까지 생성되지 않았습니다. 기존 결과는 유지되며, 다시 실행할 수 있습니다.',
+          EMPTY_AI_RESPONSE: '분석 결과가 비어 있습니다. 다시 실행해주세요.',
+          AI_REFUSAL: '선택한 AI가 이 요청에 대한 분석을 제공하지 않았습니다.',
+          INVALID_AI_RESPONSE: '분석 응답을 확인할 수 없습니다. 새로고침 후 다시 시도해주세요.',
+        };
+        setErrorMessage(messages[error?.message] || '선택한 엔진의 분석에 실패했습니다. 잠시 후 다시 시도해주세요.');
       }
     } finally {
       setIsLoading(false);
+      setRunningEngine(null);
     }
   };
 
@@ -253,6 +274,11 @@ export const FollowUpTab: React.FC<{ activeTab: number }> = ({ activeTab }) => {
           isLoading={isLoading}
           canStart={!!mainSymptom}
           onStartAnalysis={handleStartAnalysis}
+          selectedEngine={selectedEngine}
+          onSelectEngine={selectEngine}
+          runningEngine={runningEngine}
+          resultEngine={data.analysisResult ? (data.resultEngine || 'gemini') : undefined}
+          resultModel={data.resultModel}
         />
       </div>
       

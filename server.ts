@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
 dotenv.config();
 import { requireUser } from './serverSecurity.ts';
+import { FollowUpError, generateFollowUpResponse } from './followUpEngine.ts';
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -141,26 +142,13 @@ app.post("/api/generate-chart", async (req, res) => {
 });
 
 app.post("/api/generate-followup", async (req, res) => {
+  const controller = new AbortController();
+  const onClose = () => { if (!res.writableEnded) controller.abort(); };
+  res.once('close', onClose);
   try {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) throw new Error("API Key not configured on the server");
+    const generated = await generateFollowUpResponse(req.body?.prompt, req.body?.engine, { signal: controller.signal });
+    let text = generated.text;
 
-    const ai = new GoogleGenAI({ apiKey });
-    const { prompt } = req.body;
-
-    const models = ["gemini-3.1-pro-preview", "gemini-3.6-flash"];
-    let lastError: any;
-
-    for (const model of models) {
-      try {
-        const response = await executeWithRetry(() =>
-          ai.models.generateContent({
-            model: model,
-            contents: [{ role: 'user', parts: [{ text: prompt }] }],
-          }), 2, 2000
-        );
-        let text = response.text || '';
-        
         // JSON 파싱 및 구글 스크립트 웹훅 연동 로직
         let rawJson = null;
         
@@ -214,7 +202,6 @@ app.post("/api/generate-followup", async (req, res) => {
               parsedData = [parsedData];
             }
             
-            console.log("Sending to Webhook:", JSON.stringify(parsedData));
             
             const webhookUrl = 'https://script.google.com/macros/s/AKfycbzEetbOaAPEneei0sXqDaHfTeqMaliTKlayrLzVsstzsUtqe6ErJaneytTMqwcc375A/exec';
             const webhookRes = await fetch(webhookUrl, {
@@ -327,18 +314,13 @@ app.post("/api/generate-followup", async (req, res) => {
           }
         }
 
-        return res.json({ text });
-      } catch (error: any) {
-        console.warn(`FollowUp Analysis Model ${model} failed...`, error.message);
-        lastError = error;
-      }
-    }
-    const isRateLimit = lastError?.status === 429 || lastError?.message?.toLowerCase().includes('quota');
-    if (isRateLimit) return res.status(429).json({ error: "QUOTA_EXCEEDED" });
-    throw lastError;
+    return res.json({ text, engine: generated.engine, model: generated.model });
   } catch (error: any) {
-    console.error("Followup error:", error);
-    res.status(500).json({ error: error.message });
+    const code = error instanceof FollowUpError ? error.message : 'ANALYSIS_FAILED';
+    console.error('Followup error:', code);
+    if (!res.destroyed) res.status(error instanceof FollowUpError ? error.status : 500).json({ error: code });
+  } finally {
+    res.off('close', onClose);
   }
 });
 

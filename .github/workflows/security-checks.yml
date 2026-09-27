@@ -17,9 +17,11 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run lint
       - run: npm run test:security
+      - run: npm run test:followup
       - run: npm run build
         env:
           GEMINI_API_KEY: SECURITY_BUILD_SENTINEL_MUST_NOT_SHIP
+          OPENAI_API_KEY: OPENAI_BUILD_SENTINEL_MUST_NOT_SHIP
       - name: Check client assets for server keys
-        run: '! grep -R -l SECURITY_BUILD_SENTINEL_MUST_NOT_SHIP dist'
+        run: '! grep -R -l -E "SECURITY_BUILD_SENTINEL_MUST_NOT_SHIP|OPENAI_BUILD_SENTINEL_MUST_NOT_SHIP" dist'
       - run: npm audit --audit-level=low

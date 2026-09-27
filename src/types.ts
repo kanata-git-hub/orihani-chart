@@ -54,7 +54,18 @@ export interface ChatMessage {
   text: string;
 }
 
+export type FollowUpEngine = 'gemini' | 'gpt-astra';
+
+export interface FollowUpAnalysis {
+  text: string;
+  engine: FollowUpEngine;
+  model: string;
+}
+
 export interface FollowUpData {
+  selectedEngine?: FollowUpEngine;
+  resultEngine?: FollowUpEngine;
+  resultModel?: string;
   briefing: FollowUpBriefing;
   analysisResult?: string;
 }

@@ -11,7 +11,8 @@
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
     "test:security": "node --experimental-strip-types --test tests/security.test.ts tests/storage-security.test.ts tests/auth-fetch.test.cjs tests/markdown-security.test.mjs",
-    "test:rules": "node --test tests/firestore-security.cjs && node --experimental-strip-types --test firestore.rules.test.ts"
+    "test:rules": "node --test tests/firestore-security.cjs && node --experimental-strip-types --test firestore.rules.test.ts",
+    "test:followup": "node --experimental-strip-types --test tests/followup-engine.test.ts tests/followup-http.test.mjs tests/followup-client.test.cjs"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",

@@ -1,5 +1,5 @@
 import { authFetch } from '../authFetch';
-import { PatientBriefing, AnalysisResult } from "../types";
+import { PatientBriefing, AnalysisResult, FollowUpEngine, FollowUpAnalysis } from "../types";
 import { generateChartPrompt } from "./prompts";
 
 export const generateAIChart = async (
@@ -33,14 +33,15 @@ export const generateAIChart = async (
 };
 
 export const generateFollowUpAnalysis = async (
-  prompt: string
-): Promise<string> => {
+  prompt: string,
+  engine: FollowUpEngine = 'gemini'
+): Promise<FollowUpAnalysis> => {
     const response = await authFetch('/api/generate-followup', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ prompt })
+      body: JSON.stringify({ prompt, engine })
     });
 
     if (!response.ok) {
@@ -52,7 +53,10 @@ export const generateFollowUpAnalysis = async (
     }
 
     const data = await response.json();
-    return data.text;
+    if (typeof data.text !== 'string' || !data.text.trim() || data.engine !== engine || typeof data.model !== 'string') {
+      throw new Error('INVALID_AI_RESPONSE');
+    }
+    return data;
 };
 
 
