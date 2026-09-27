@@ -14,6 +14,7 @@ RUN npm install --omit=dev
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/server.ts ./server.ts
 COPY --from=build /app/serverSecurity.ts ./serverSecurity.ts
+COPY --from=build /app/followUpEngine.ts ./followUpEngine.ts
 
 ENV NODE_ENV=production
 
