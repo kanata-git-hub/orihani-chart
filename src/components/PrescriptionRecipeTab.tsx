@@ -239,8 +239,7 @@ export const PrescriptionRecipeTab: React.FC = () => {
           <summary className="flex min-h-11 cursor-pointer list-none flex-wrap items-center gap-x-2 gap-y-1 px-2 py-2 sm:px-3 marker:content-none [&::-webkit-details-marker]:hidden">
             <ChevronDown size={21} className="shrink-0 transition-transform group-open:rotate-180" aria-hidden="true" />
             <span className="text-lg font-bold">1일 기준 약재량</span>
-            <span className="ml-auto text-sm group-open:hidden">펼쳐서 보기</span>
-            <span className="ml-auto hidden text-sm group-open:inline">접기</span>
+            <span className="ml-auto text-base">총 <strong className="tabular-nums">{grams(totalDaily)}g</strong></span>
           </summary>
           <div className="border-t border-primary/15 p-2 sm:p-3">
             <p className="mb-2 font-bold">{recipe.herbs.length}종 · 총 {grams(totalDaily)}g</p>
