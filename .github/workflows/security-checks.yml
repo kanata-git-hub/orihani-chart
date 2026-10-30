@@ -18,6 +18,7 @@ jobs:
       - run: npm run lint
       - run: npm run test:security
       - run: npm run test:followup
+      - run: npm run test:recipe
       - run: npm run build
         env:
           GEMINI_API_KEY: SECURITY_BUILD_SENTINEL_MUST_NOT_SHIP

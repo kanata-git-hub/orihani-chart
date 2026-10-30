@@ -2,6 +2,8 @@ import dotenv from 'dotenv';
 dotenv.config();
 import { requireUser } from './serverSecurity.ts';
 import { FollowUpError, generateFollowUpResponse } from './followUpEngine.ts';
+import { RecipeError, searchPrescriptionPatients, createPrescriptionRecipe } from './prescriptionRecipe.ts';
+import type { SheetRows } from './prescriptionRecipe.ts';
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -398,6 +400,70 @@ app.post("/api/fetch-google-sheet", async (req, res) => {
   } catch (error: any) {
     console.error('Google Sheets API Error:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Read-only recipe lookup. Use the signed-in user's Google token, never an AI response.
+const prescriptionSpreadsheetId = '1Nz9rBTwGYog-HEPPUyX5YsNnKvWBW5B9E7LADKMVZ48';
+async function readPrescriptionSheet(accessToken: string, range: string): Promise<SheetRows> {
+  const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${prescriptionSpreadsheetId}/values/${encodeURIComponent(range)}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    signal: AbortSignal.timeout(20000),
+  });
+  if (response.status === 401) throw new RecipeError('Google 연동이 만료되었습니다. Google 계정을 다시 연결해주세요.', 401);
+  if (response.status === 403) throw new RecipeError('연결한 Google 계정에 한약환자관리 시트를 읽을 권한이 없습니다.', 403);
+  if (!response.ok) throw new RecipeError('구글 시트를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.', 502);
+  const data = await response.json();
+  if (!Array.isArray(data.values)) throw new RecipeError('구글 시트에 읽을 수 있는 데이터가 없습니다.');
+  return data.values;
+}
+
+function recipeToken(body: any): string {
+  if (typeof body?.accessToken !== 'string' || !body.accessToken.trim()) {
+    throw new RecipeError('Google 계정을 연결해주세요.', 401);
+  }
+  if (body.accessToken.length > 10000 || /[\r\n]/.test(body.accessToken)) throw new RecipeError('Google 연동 정보를 확인해주세요.', 401);
+  return body.accessToken;
+}
+
+function recipeErrorResponse(error: unknown, res: express.Response) {
+  if (error instanceof RecipeError) return res.status(error.status).json({ error: error.message });
+  // Do not log upstream request objects: they contain the Google access token.
+  return res.status(502).json({ error: '처방 정보를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.' });
+}
+
+app.post('/api/prescription-patients', async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    const token = recipeToken(req.body);
+    const { name, gender = '', symptoms = '' } = req.body;
+    if (typeof name !== 'string' || !name.trim() || name.length > 100 || typeof gender !== 'string' || gender.length > 20 || typeof symptoms !== 'string' || symptoms.length > 500) {
+      throw new RecipeError('환자 이름과 검색 조건을 확인해주세요.', 400);
+    }
+    const rows = await readPrescriptionSheet(token, "'한약환자'!A1:V");
+    const patients = searchPrescriptionPatients(rows, { name, gender, symptoms });
+    return res.json({ patients, fetchedAt: new Date().toISOString() });
+  } catch (error) {
+    return recipeErrorResponse(error, res);
+  }
+});
+
+app.post('/api/prescription-recipe', async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    const token = recipeToken(req.body);
+    const { patientId } = req.body;
+    if (typeof patientId !== 'string' || patientId.length > 120 || !/^(?:chart:.+|row:[1-9]\d*:[a-f0-9]{16})$/.test(patientId)) {
+      throw new RecipeError('검색 결과에서 환자를 선택해주세요.', 400);
+    }
+    const [patients, herbs] = await Promise.all([
+      readPrescriptionSheet(token, "'한약환자'!A1:V"),
+      readPrescriptionSheet(token, "'약재'!A1:D"),
+    ]);
+    const recipe = createPrescriptionRecipe(patients, herbs, patientId);
+    return res.json({ ...recipe, fetchedAt: new Date().toISOString() });
+  } catch (error) {
+    return recipeErrorResponse(error, res);
   }
 });
 

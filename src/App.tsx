@@ -17,10 +17,11 @@ import { PatientBriefingForm } from './components/PatientBriefingForm';
 import { AnalysisOutput } from './components/AnalysisOutput';
 import { ResetModal } from './components/ResetModal';
 import { FollowUpTab } from './components/FollowUpTab';
+import { PrescriptionRecipeTab } from './components/PrescriptionRecipeTab';
 import { PWAInstaller } from './components/PWAInstaller';
 import { initialBriefing } from './constants';
 
-type AppMode = 'INITIAL' | 'FOLLOW_UP';
+type AppMode = 'INITIAL' | 'FOLLOW_UP' | 'RECIPE';
 
 function MainApp() {
   const {
@@ -85,7 +86,7 @@ function MainApp() {
     <div className="min-h-screen bg-bg-light text-primary p-4 md:p-8">
       <div className="max-w-[1800px] mx-auto">
         {/* Top App Mode Toggle */}
-        <div className="flex justify-end gap-2 mb-4 hidden lg:flex">
+        <div className="justify-end flex-wrap gap-2 mb-4 hidden lg:flex">
           <button 
             onClick={logout}
             className="px-6 py-2.5 border-2 border-primary font-bold text-lg transition-colors bg-white text-primary hover:bg-primary/5"
@@ -113,9 +114,15 @@ function MainApp() {
           >
             처방 재평가실 (오답노트)
           </button>
+          <button
+            onClick={() => setAppMode('RECIPE')}
+            className={`px-8 py-2.5 border-2 border-primary font-bold text-lg transition-colors ${appMode === 'RECIPE' ? 'bg-accent text-primary shadow-[4px_4px_0px_0px_rgba(85,44,36,1)] translate-y-[-2px]' : 'bg-white text-primary hover:bg-primary/5'}`}
+          >
+            처방 레시피
+          </button>
         </div>
 
-        <Header activeTab={activeTab} setActiveTab={setActiveTab} onResetAll={() => setIsGlobalResetModalOpen(true)} />
+        <Header activeTab={activeTab} setActiveTab={setActiveTab} showPatientTabs={appMode !== 'RECIPE'} onResetAll={() => setIsGlobalResetModalOpen(true)} />
         
         {/* Mobile App Mode Toggle */}
         <div className="grid grid-cols-2 gap-2 mb-6 lg:hidden">
@@ -130,6 +137,12 @@ function MainApp() {
             className={`py-3 px-2 border-2 border-primary font-bold text-sm transition-colors flex items-center justify-center touch-target ${appMode === 'FOLLOW_UP' ? 'bg-accent text-primary shadow-[4px_4px_0px_0px_rgba(85,44,36,1)]' : 'bg-white text-primary'}`}
           >
             처방 재평가
+          </button>
+          <button
+            onClick={() => setAppMode('RECIPE')}
+            className={`col-span-2 py-3 px-2 border-2 border-primary font-bold text-base transition-colors flex items-center justify-center touch-target ${appMode === 'RECIPE' ? 'bg-accent text-primary shadow-[4px_4px_0px_0px_rgba(85,44,36,1)]' : 'bg-white text-primary'}`}
+          >
+            처방 레시피
           </button>
           <button 
             onClick={logout}
@@ -177,6 +190,8 @@ function MainApp() {
               <AnalysisOutput result={result} />
             </section>
           </div>
+        ) : appMode === 'RECIPE' ? (
+          <PrescriptionRecipeTab />
         ) : (
           /* Follow-Up Chat Mode View */
           <div className="mt-4">
