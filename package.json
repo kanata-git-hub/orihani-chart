@@ -12,7 +12,8 @@
     "lint": "tsc --noEmit",
     "test:security": "node --experimental-strip-types --test tests/security.test.ts tests/storage-security.test.ts tests/auth-fetch.test.cjs tests/markdown-security.test.mjs",
     "test:rules": "node --test tests/firestore-security.cjs && node --experimental-strip-types --test firestore.rules.test.ts",
-    "test:followup": "node --experimental-strip-types --test tests/followup-engine.test.ts tests/followup-http.test.mjs tests/followup-client.test.cjs"
+    "test:followup": "node --experimental-strip-types --test tests/followup-engine.test.ts tests/followup-http.test.mjs tests/followup-client.test.cjs",
+    "test:recipe": "node --experimental-strip-types --test tests/prescription-recipe.test.ts tests/prescription-http.test.mjs"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",
@@ -47,6 +48,7 @@
     "qs": "^6.16.0",
     "tsx": {
       "esbuild": "^0.28.1"
-    }
+    },
+    "@grpc/grpc-js": "1.14.7"
   }
 }

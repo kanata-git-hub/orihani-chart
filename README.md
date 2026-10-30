@@ -27,6 +27,21 @@ post-processing. The selected engine is saved with each patient's local draft;
 results show the provider and actual model returned by the server. A failed run
 keeps the previous result. Astra never silently falls back to Gemini.
 
+## Prescription recipe lookup
+
+The separate **처방 레시피** tab searches the connected patient sheet by name,
+with optional gender and symptom filters. Select a patient after checking their
+chart number, age, symptoms and latest record date. Records are grouped by chart
+number; a historical symptom match still opens that patient's newest record.
+Payment date takes precedence, with delivery date and sheet row as fallbacks.
+
+Each recipe request reads the latest patient row and the current herb catalog
+again. Formula duplicates use the larger daily amount. The daily recipe is shown
+with collapsed 7-, 15- and 30-day totals. Unknown formulas, missing quantities or
+ambiguous modifications produce an error instead of an incomplete recipe. This
+read-only lookup does not call an AI provider or write patient data to the sheet.
+Run `npm run test:recipe` for calculation and HTTP regression checks.
+
 Configure `OPENAI_API_KEY` in the runtime environment of each deployed Cloud Run
 service that runs this app. It is server-only; do not place it in browser code or
 a `VITE_` variable. Existing `GEMINI_API_KEY` configuration is unchanged. A missing

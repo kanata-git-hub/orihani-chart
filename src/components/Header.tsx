@@ -4,9 +4,10 @@ interface HeaderProps {
   activeTab: number;
   setActiveTab: (tab: number) => void;
   onResetAll?: () => void;
+  showPatientTabs?: boolean;
 }
 
-export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab, onResetAll }) => {
+export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab, onResetAll, showPatientTabs = true }) => {
   return (
     <header className="mb-6 border-b border-primary pb-4 flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
       <div className="flex items-center gap-4 shrink-0">
@@ -18,7 +19,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab, onReset
       </div>
       
       {/* Tab Navigation */}
-      <div className="flex bg-white border border-primary p-1 shadow-[2px_2px_0px_0px_rgba(85,44,36,1)] w-full md:w-auto flex-1 min-w-0 overflow-x-auto touch-pan-x scrollbar-hide">
+      {showPatientTabs && <div className="flex bg-white border border-primary p-1 shadow-[2px_2px_0px_0px_rgba(85,44,36,1)] w-full md:w-auto flex-1 min-w-0 overflow-x-auto touch-pan-x scrollbar-hide">
         {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((num) => (
           <button
             key={num}
@@ -41,7 +42,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab, onReset
             전체 리셋
           </button>
         )}
-      </div>
+      </div>}
 
       <div className="text-right hidden lg:block shrink-0">
         <p className="text-xs font-mono opacity-50">현재 접속 시간</p>

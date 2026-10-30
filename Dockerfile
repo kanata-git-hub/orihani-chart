@@ -2,7 +2,7 @@
 FROM node:22-alpine as build
 WORKDIR /app
 COPY package*.json ./
-RUN npm install
+RUN npm ci
 COPY . .
 RUN npm run build
 
@@ -10,11 +10,12 @@ RUN npm run build
 FROM node:22-alpine
 WORKDIR /app
 COPY package*.json ./
-RUN npm install --omit=dev
+RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/server.ts ./server.ts
 COPY --from=build /app/serverSecurity.ts ./serverSecurity.ts
 COPY --from=build /app/followUpEngine.ts ./followUpEngine.ts
+COPY --from=build /app/prescriptionRecipe.ts ./prescriptionRecipe.ts
 
 ENV NODE_ENV=production
 
