@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { scopedStorage } from './accountStorage';
 import { AlertCircle } from 'lucide-react';
 import { Routes, Route, useNavigate } from 'react-router-dom';
 import { useAuth } from './contexts/AuthContext';
@@ -23,6 +24,14 @@ import { initialBriefing } from './constants';
 
 type AppMode = 'INITIAL' | 'FOLLOW_UP' | 'RECIPE';
 
+function restoreAppMode(uid: string | null): AppMode {
+  try {
+    const mode = scopedStorage(localStorage, uid).getItem('appMode');
+    if (mode === 'FOLLOW_UP' || mode === 'RECIPE') return mode;
+  } catch { /* Storage can be unavailable in private browsing. */ }
+  return 'INITIAL';
+}
+
 function MainApp() {
   const {
     activeTab,
@@ -38,7 +47,13 @@ function MainApp() {
   const { role, user, logout } = useAuth();
   const navigate = useNavigate();
 
-  const [appMode, setAppMode] = useState<AppMode>('INITIAL');
+  const [appMode, updateAppMode] = useState<AppMode>(() => restoreAppMode(user?.uid || null));
+  useEffect(() => { updateAppMode(restoreAppMode(user?.uid || null)); }, [user?.uid]);
+  const setAppMode = (mode: AppMode) => {
+    updateAppMode(mode);
+    try { scopedStorage(localStorage, user?.uid || null).setItem('appMode', mode); }
+    catch { /* Navigation remains usable when local storage is unavailable. */ }
+  };
   const [isLoading, setIsLoading] = useState(false);
   const [isResetModalOpen, setIsResetModalOpen] = useState(false);
   const [isGlobalResetModalOpen, setIsGlobalResetModalOpen] = useState(false);
@@ -191,7 +206,7 @@ function MainApp() {
             </section>
           </div>
         ) : appMode === 'RECIPE' ? (
-          <PrescriptionRecipeTab />
+          <PrescriptionRecipeTab key={user?.uid || 'signed-out'} />
         ) : (
           /* Follow-Up Chat Mode View */
           <div className="mt-4">

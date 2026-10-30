@@ -40,6 +40,11 @@ again. Formula duplicates use the larger daily amount. The daily recipe is shown
 with collapsed 7-, 15- and 30-day totals. Unknown formulas, missing quantities or
 ambiguous modifications produce an error instead of an incomplete recipe. This
 read-only lookup does not call an AI provider or write patient data to the sheet.
+The compact herb grid uses three columns on phones and up to eight on desktops.
+Searches, selected recipes and expanded day panels are saved in the browser per
+signed-in account. Refreshing or switching menus restores the previous view;
+restored recipes show their lookup timestamp and can be refreshed from the sheet.
+The recipe tab's clear button removes its saved state.
 Run `npm run test:recipe` for calculation and HTTP regression checks.
 
 Configure `OPENAI_API_KEY` in the runtime environment of each deployed Cloud Run
