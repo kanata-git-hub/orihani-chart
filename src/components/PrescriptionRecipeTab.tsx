@@ -2,30 +2,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import { AlertCircle, ChevronDown, Leaf, Loader2, RefreshCw, Search, X } from 'lucide-react';
 import { authFetch } from '../authFetch';
 import { useAuth } from '../contexts/AuthContext';
-
-interface PrescriptionPatient {
-  id: string;
-  name: string;
-  chartNumber: string;
-  age: string;
-  gender: string;
-  symptoms: string;
-  date: string;
-  dateLabel: string;
-  rowNumber: number;
-  prescription: string;
-  formulas: string[];
-  additions: string;
-  removals: string;
-  recordCount: number;
-}
-
-interface RecipeResult {
-  patient: PrescriptionPatient;
-  herbs: Array<{ name: string; dailyGrams: number }>;
-  warnings?: string[];
-  fetchedAt: string;
-}
+import { usePrescriptionRecipeDraft } from '../hooks/usePrescriptionRecipeDraft';
+import type { PrescriptionPatient, RecipeDraft } from '../recipeDraftStorage';
 
 const grams = (amount: number) => new Intl.NumberFormat('ko-KR', {
   maximumFractionDigits: 6,
@@ -39,13 +17,12 @@ const patientMeta = (patient: PrescriptionPatient) => [
 
 export const PrescriptionRecipeTab: React.FC = () => {
   const { googleAccessToken, reconnectGoogle, user } = useAuth();
-  const [name, setName] = useState('');
-  const [gender, setGender] = useState('');
-  const [symptoms, setSymptoms] = useState('');
-  const [patients, setPatients] = useState<PrescriptionPatient[]>([]);
-  const [hasSearched, setHasSearched] = useState(false);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [recipe, setRecipe] = useState<RecipeResult | null>(null);
+  const { draft, setDraft, resetDraft, restored, setRestored, saveFailed } = usePrescriptionRecipeDraft(user?.uid || null);
+  const { name, gender, symptoms, patients, hasSearched, selectedId, recipe, openDays } = draft;
+  const setField = <K extends keyof RecipeDraft,>(field: K, value: React.SetStateAction<RecipeDraft[K]>) => {
+    setDraft(previous => ({ ...previous, [field]: typeof value === 'function'
+      ? (value as (previousValue: RecipeDraft[K]) => RecipeDraft[K])(previous[field]) : value }));
+  };
   const [busy, setBusy] = useState<'search' | 'recipe' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [needsReconnect, setNeedsReconnect] = useState(false);
@@ -59,36 +36,22 @@ export const PrescriptionRecipeTab: React.FC = () => {
     controller.current = null;
   };
 
-  useEffect(() => {
-    cancelRequest();
-    setName('');
-    setGender('');
-    setSymptoms('');
-    setPatients([]);
-    setHasSearched(false);
-    setSelectedId(null);
-    setRecipe(null);
-    setBusy(null);
-    setError(null);
-    setNeedsReconnect(false);
-    return cancelRequest;
-  }, [user?.uid]);
+  useEffect(() => cancelRequest, [user?.uid]);
 
   const clearResults = () => {
     cancelRequest();
-    setPatients([]);
-    setHasSearched(false);
-    setSelectedId(null);
-    setRecipe(null);
+    setDraft(previous => ({ ...previous, patients: [], hasSearched: false, selectedId: null, recipe: null, openDays: [] }));
+    setRestored(false);
     setBusy(null);
     setError(null);
   };
 
   const reset = () => {
-    clearResults();
-    setName('');
-    setGender('');
-    setSymptoms('');
+    cancelRequest();
+    resetDraft();
+    setBusy(null);
+    setError(null);
+    setNeedsReconnect(false);
   };
 
   const request = async (path: string, body: Record<string, string>, forceReconnect = false) => {
@@ -129,10 +92,8 @@ export const PrescriptionRecipeTab: React.FC = () => {
       setError('환자 이름을 입력해주세요. 성별과 증상은 선택 사항입니다.');
       return;
     }
-    setPatients([]);
-    setSelectedId(null);
-    setRecipe(null);
-    setHasSearched(false);
+    setDraft(previous => ({ ...previous, patients: [], selectedId: null, recipe: null, hasSearched: false, openDays: [] }));
+    setRestored(false);
     setError(null);
     setBusy('search');
     const promise = request('/api/prescription-patients', { name: name.trim(), gender, symptoms: symptoms.trim() }, forceReconnect);
@@ -140,8 +101,7 @@ export const PrescriptionRecipeTab: React.FC = () => {
     try {
       const data = await promise;
       if (!data || version !== requestVersion.current) return;
-      setPatients(data.patients);
-      setHasSearched(true);
+      setDraft(previous => ({ ...previous, patients: data.patients, hasSearched: true }));
     } catch (err) {
       if (version === requestVersion.current) {
         setError(err instanceof Error ? err.message : '환자 검색에 실패했습니다. 다시 시도해주세요.');
@@ -152,8 +112,9 @@ export const PrescriptionRecipeTab: React.FC = () => {
   };
 
   const loadRecipe = async (patientId: string) => {
-    setSelectedId(patientId);
-    setRecipe(null);
+    setDraft(previous => ({ ...previous, selectedId: patientId,
+      recipe: previous.recipe?.patient.id === patientId ? previous.recipe : null,
+      openDays: previous.selectedId === patientId ? previous.openDays : [] }));
     setError(null);
     setBusy('recipe');
     const promise = request('/api/prescription-recipe', { patientId });
@@ -161,8 +122,9 @@ export const PrescriptionRecipeTab: React.FC = () => {
     try {
       const data = await promise;
       if (!data || version !== requestVersion.current) return;
-      setRecipe(data);
-      setPatients(previous => previous.map(patient => patient.id === patientId ? data.patient : patient));
+      setDraft(previous => ({ ...previous, recipe: data,
+        patients: previous.patients.map(patient => patient.id === patientId ? data.patient : patient) }));
+      setRestored(false);
       // Move focus to the selected prescription without forcing a mobile scroll.
       requestAnimationFrame(() => {
         if (version === requestVersion.current) resultHeading.current?.focus({ preventScroll: true });
@@ -193,11 +155,11 @@ export const PrescriptionRecipeTab: React.FC = () => {
         <div className="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-[1fr_150px_1.5fr]">
           <div className="min-w-0">
             <label htmlFor="recipe-patient-name" className="mb-1 block font-bold">환자 이름 <span className="text-sm font-normal">필수</span></label>
-            <input id="recipe-patient-name" value={name} onChange={event => { clearResults(); setName(event.target.value); }} autoComplete="off" placeholder="성함 입력" className={inputClass} required maxLength={100} />
+            <input id="recipe-patient-name" value={name} onChange={event => { clearResults(); setField('name', event.target.value); }} autoComplete="off" placeholder="성함 입력" className={inputClass} required maxLength={100} />
           </div>
           <div className="min-w-0">
             <label htmlFor="recipe-gender" className="mb-1 block font-bold">성별 <span className="text-sm font-normal">선택</span></label>
-            <select id="recipe-gender" value={gender} onChange={event => { clearResults(); setGender(event.target.value); }} className={inputClass}>
+            <select id="recipe-gender" value={gender} onChange={event => { clearResults(); setField('gender', event.target.value); }} className={inputClass}>
               <option value="">전체</option>
               <option value="여">여</option>
               <option value="남">남</option>
@@ -205,7 +167,7 @@ export const PrescriptionRecipeTab: React.FC = () => {
           </div>
           <div className="min-w-0 sm:col-span-2 lg:col-span-1">
             <label htmlFor="recipe-symptoms" className="mb-1 block font-bold">주요 증상 <span className="text-sm font-normal">선택</span></label>
-            <input id="recipe-symptoms" value={symptoms} onChange={event => { clearResults(); setSymptoms(event.target.value); }} autoComplete="off" placeholder="예: 소화불량" className={inputClass} maxLength={200} />
+            <input id="recipe-symptoms" value={symptoms} onChange={event => { clearResults(); setField('symptoms', event.target.value); }} autoComplete="off" placeholder="예: 소화불량" className={inputClass} maxLength={200} />
           </div>
         </div>
         <p className="mt-3 text-sm leading-6 text-primary/75">이름만 입력해도 검색됩니다. 동명이인은 아래 결과의 성별·나이·증상·차트번호로 구분하세요.</p>
@@ -217,6 +179,8 @@ export const PrescriptionRecipeTab: React.FC = () => {
           <button type="button" onClick={reset} className="flex min-h-12 items-center justify-center gap-1 border border-primary/40 bg-white px-4 py-2.5 hover:bg-bg-input"><X size={18} aria-hidden="true" /> 지우기</button>
         </div>
       </form>
+
+      {saveFailed && <p role="status" className="text-sm text-amber-800">브라우저에 현재 상태를 저장하지 못했습니다. 새로고침하거나 메뉴를 이동하면 이전 결과가 표시될 수 있습니다.</p>}
 
       {error && <div role="alert" className="flex items-start gap-3 border border-red-300 bg-red-50 p-4 text-red-800">
         <AlertCircle size={21} className="mt-0.5 shrink-0" aria-hidden="true" />
@@ -252,13 +216,15 @@ export const PrescriptionRecipeTab: React.FC = () => {
         <div className="min-w-0 border-2 border-primary bg-white p-4 sm:p-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
-              <h2 id="recipe-result-heading" ref={resultHeading} tabIndex={-1} className="break-words text-2xl font-bold outline-none">{recipe.patient.name}님의 최신 처방</h2>
+              <h2 id="recipe-result-heading" ref={resultHeading} tabIndex={-1} className="break-words text-2xl font-bold outline-none">{recipe.patient.name}님의 {restored ? '마지막 조회 처방' : '최신 처방'}</h2>
               <p className="mt-1 break-words">{patientMeta(recipe.patient)}</p>
             </div>
             <button type="button" onClick={() => void loadRecipe(recipe.patient.id)} disabled={!!busy} className="flex items-center gap-2 border border-primary/40 px-3 py-2 text-base hover:bg-bg-input disabled:opacity-50"><RefreshCw size={17} aria-hidden="true" /> 최신 내용 새로고침</button>
           </div>
           <p className="mt-3 break-words">{recipe.patient.symptoms || '증상 미입력'}</p>
           <p className="mt-1 text-sm text-primary/75">{recipe.patient.dateLabel} {recipe.patient.date || ''} · 한약환자 {recipe.patient.rowNumber}행 · 기록 {recipe.patient.recordCount}건</p>
+          <p className="mt-1 text-sm text-primary/75">조회 시각: {new Date(recipe.fetchedAt).toLocaleString('ko-KR')}</p>
+          {restored && <p className="mt-2 text-sm">이전 조회 결과를 복원했습니다. 시트 변경 사항은 ‘최신 내용 새로고침’으로 반영하세요.</p>}
           <div className="mt-4 border-l-4 border-accent bg-bg-light p-3 sm:p-4">
             <p className="text-sm font-bold text-primary/75">처방 조합</p>
             <p className="mt-1 break-words text-xl font-bold leading-relaxed">{recipe.patient.formulas.join(' + ') || recipe.patient.prescription}</p>
@@ -269,33 +235,36 @@ export const PrescriptionRecipeTab: React.FC = () => {
           {recipe.warnings?.map((warning, index) => <p key={index} className="mt-2 border border-amber-300 bg-amber-50 p-3 text-amber-900">{warning}</p>)}
         </div>
 
-        <div className="border border-primary/25 bg-white p-4 sm:p-5">
-          <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+        <div className="border border-primary/25 bg-white p-2 sm:p-3">
+          <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
             <h3 className="text-xl font-bold">1일 기준 약재량</h3>
             <p className="font-bold">{recipe.herbs.length}종 · 총 {grams(totalDaily)}g</p>
           </div>
-          <dl className="grid min-w-0 grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-4">
-            {recipe.herbs.map(herb => <div key={herb.name} className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-2 border border-primary/10 bg-bg-light px-3 py-2.5">
-              <dt className="break-words font-medium">{herb.name}</dt>
+          <dl className="grid min-w-0 grid-cols-3 gap-1 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8">
+            {recipe.herbs.map(herb => <div key={herb.name} className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-1 border border-primary/10 bg-bg-light px-1.5 py-1 text-[15px] leading-5 sm:text-base">
+              <dt className="min-w-0 break-words font-medium">{herb.name}</dt>
               <dd className="whitespace-nowrap font-bold tabular-nums">{grams(herb.dailyGrams)}g</dd>
             </div>)}
           </dl>
         </div>
 
-        <div className="space-y-3">
-          {[7, 15, 30].map(days => <details key={`${recipe.fetchedAt}-${days}`} className="group min-w-0 border-2 border-primary/25 bg-white">
-            <summary className="flex min-h-16 cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-1 p-4 marker:content-none [&::-webkit-details-marker]:hidden">
+        <div className="space-y-2">
+          {[7, 15, 30].map(days => <details key={days} open={openDays.includes(days)} onToggle={event => {
+            const open = event.currentTarget.open;
+            setDraft(previous => previous.openDays.includes(days) === open ? previous : ({ ...previous,
+              openDays: open ? [...previous.openDays, days] : previous.openDays.filter(day => day !== days) }));
+          }} className="group min-w-0 border border-primary/25 bg-white">
+            <summary className="flex min-h-11 cursor-pointer list-none flex-wrap items-center gap-x-2 gap-y-1 px-2 py-2 sm:px-3 marker:content-none [&::-webkit-details-marker]:hidden">
               <ChevronDown size={21} className="shrink-0 transition-transform group-open:rotate-180" aria-hidden="true" />
-              <span className="text-xl font-bold">{days}일치</span>
+              <span className="text-lg font-bold">{days}일치</span>
               <span className="ml-auto text-base">총 <strong className="tabular-nums">{grams(totalDaily * days)}g</strong></span>
-              <span className="w-full pl-8 text-sm text-primary/75 group-open:hidden">눌러서 약재별 용량 보기</span>
             </summary>
-            <div className="border-t border-primary/15 p-3 sm:p-4">
-              <p className="mb-3 text-sm text-primary/75">각 약재의 1일 용량 × {days}일</p>
-              <dl className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                {recipe.herbs.map(herb => <div key={herb.name} className="flex min-w-0 items-center justify-between gap-3 border border-primary/10 bg-bg-light px-3 py-3">
-                  <dt className="min-w-0 break-words font-bold">{herb.name}<span className="mt-0.5 block text-sm font-normal text-primary/70">1일 {grams(herb.dailyGrams)}g</span></dt>
-                  <dd className="shrink-0 whitespace-nowrap text-lg font-bold tabular-nums">{grams(herb.dailyGrams * days)}g</dd>
+            <div className="border-t border-primary/15 p-2 sm:p-3">
+              <p className="mb-2 text-sm text-primary/75">각 약재의 1일 용량 × {days}일</p>
+              <dl className="grid min-w-0 grid-cols-3 gap-1 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8">
+                {recipe.herbs.map(herb => <div key={herb.name} className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-1 border border-primary/10 bg-bg-light px-1.5 py-1 text-[15px] leading-5 sm:text-base">
+                  <dt className="min-w-0 break-words font-medium">{herb.name}</dt>
+                  <dd className="whitespace-nowrap font-bold tabular-nums">{grams(herb.dailyGrams * days)}g</dd>
                 </div>)}
               </dl>
             </div>
