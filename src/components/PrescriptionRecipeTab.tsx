@@ -235,18 +235,23 @@ export const PrescriptionRecipeTab: React.FC = () => {
           {recipe.warnings?.map((warning, index) => <p key={index} className="mt-2 border border-amber-300 bg-amber-50 p-3 text-amber-900">{warning}</p>)}
         </div>
 
-        <div className="border border-primary/25 bg-white p-2 sm:p-3">
-          <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
-            <h3 className="text-xl font-bold">1일 기준 약재량</h3>
-            <p className="font-bold">{recipe.herbs.length}종 · 총 {grams(totalDaily)}g</p>
+        <details key={recipe.patient.id} className="group min-w-0 border border-primary/25 bg-white">
+          <summary className="flex min-h-11 cursor-pointer list-none flex-wrap items-center gap-x-2 gap-y-1 px-2 py-2 sm:px-3 marker:content-none [&::-webkit-details-marker]:hidden">
+            <ChevronDown size={21} className="shrink-0 transition-transform group-open:rotate-180" aria-hidden="true" />
+            <span className="text-lg font-bold">1일 기준 약재량</span>
+            <span className="ml-auto text-sm group-open:hidden">펼쳐서 보기</span>
+            <span className="ml-auto hidden text-sm group-open:inline">접기</span>
+          </summary>
+          <div className="border-t border-primary/15 p-2 sm:p-3">
+            <p className="mb-2 font-bold">{recipe.herbs.length}종 · 총 {grams(totalDaily)}g</p>
+            <dl className="grid min-w-0 grid-cols-3 gap-1 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8">
+              {recipe.herbs.map(herb => <div key={herb.name} className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-1 border border-primary/10 bg-bg-light px-1.5 py-1 text-[15px] leading-5 sm:text-base">
+                <dt className="min-w-0 break-words font-medium">{herb.name}</dt>
+                <dd className="whitespace-nowrap font-bold tabular-nums">{grams(herb.dailyGrams)}g</dd>
+              </div>)}
+            </dl>
           </div>
-          <dl className="grid min-w-0 grid-cols-3 gap-1 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8">
-            {recipe.herbs.map(herb => <div key={herb.name} className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-1 border border-primary/10 bg-bg-light px-1.5 py-1 text-[15px] leading-5 sm:text-base">
-              <dt className="min-w-0 break-words font-medium">{herb.name}</dt>
-              <dd className="whitespace-nowrap font-bold tabular-nums">{grams(herb.dailyGrams)}g</dd>
-            </div>)}
-          </dl>
-        </div>
+        </details>
 
         <div className="space-y-2">
           {[7, 15, 30].map(days => <details key={days} open={openDays.includes(days)} onToggle={event => {
