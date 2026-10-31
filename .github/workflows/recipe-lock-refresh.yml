@@ -1,0 +1,29 @@
+name: Refresh recipe dependency lock
+on:
+  push:
+    branches: [codex/ephedra-pack-amounts]
+    paths: [.github/workflows/recipe-lock-refresh.yml]
+permissions:
+  contents: read
+jobs:
+  refresh-lock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm audit fix --package-lock-only --ignore-scripts
+      - run: npm audit --audit-level=low
+      - name: Commit resolved lockfile on this branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package-lock.json
+          if ! git diff --cached --quiet; then
+            git commit -m "Refresh vulnerable transitive dependencies within compatible ranges"
+            git push origin HEAD:codex/ephedra-pack-amounts
+          fi
