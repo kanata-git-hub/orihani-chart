@@ -41,6 +41,9 @@ again. Formula duplicates use the larger daily amount. The daily, 7-, 15- and
 ambiguous modifications produce an error instead of an incomplete recipe. This
 read-only lookup does not call an AI provider or write patient data to the sheet.
 The compact herb grid uses three columns on phones and up to eight on desktops.
+Herb names are bold, and each displayed gram amount has a colored background badge.
+The nine dose bands end at 15, 30, 45, 60, 75, 90, 120 and 150g, with a final band
+above 150g. Colors use the displayed daily or course amount, rounded to six decimals.
 Searches, selected recipes and expanded day panels are saved in the browser per
 signed-in account. Refreshing or switching menus restores the previous view;
 restored recipes show their lookup timestamp and can be refreshed from the sheet.

@@ -3,11 +3,17 @@ import { AlertCircle, ChevronDown, Leaf, Loader2, RefreshCw, Search, X } from 'l
 import { authFetch } from '../authFetch';
 import { useAuth } from '../contexts/AuthContext';
 import { usePrescriptionRecipeDraft } from '../hooks/usePrescriptionRecipeDraft';
+import { getRecipeDoseBand } from '../recipeDoseBands';
 import type { PrescriptionPatient, RecipeDraft } from '../recipeDraftStorage';
 
 const grams = (amount: number) => new Intl.NumberFormat('ko-KR', {
   maximumFractionDigits: 6,
 }).format(amount);
+
+const RecipeDoseAmount = ({ amount }: { amount: number }) => {
+  const band = getRecipeDoseBand(amount);
+  return <dd title={band.label} className={`ml-auto whitespace-nowrap rounded-sm px-1 font-bold tabular-nums text-slate-950 ${band.className}`}>{grams(amount)}g</dd>;
+};
 
 const patientMeta = (patient: PrescriptionPatient) => [
   patient.gender || '성별 미입력',
@@ -245,8 +251,8 @@ export const PrescriptionRecipeTab: React.FC = () => {
             <p className="mb-2 font-bold">{recipe.herbs.length}종 · 총 {grams(totalDaily)}g</p>
             <dl className="grid min-w-0 grid-cols-3 gap-1 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8">
               {recipe.herbs.map(herb => <div key={herb.name} className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-1 border border-primary/10 bg-bg-light px-1.5 py-1 text-[15px] leading-5 sm:text-base">
-                <dt className="min-w-0 break-words font-medium">{herb.name}</dt>
-                <dd className="whitespace-nowrap font-bold tabular-nums">{grams(herb.dailyGrams)}g</dd>
+                <dt className="min-w-0 break-words font-bold text-primary">{herb.name}</dt>
+                <RecipeDoseAmount amount={herb.dailyGrams} />
               </div>)}
             </dl>
           </div>
@@ -267,8 +273,8 @@ export const PrescriptionRecipeTab: React.FC = () => {
               <p className="mb-2 text-sm text-primary/75">각 약재의 1일 용량 × {days}일</p>
               <dl className="grid min-w-0 grid-cols-3 gap-1 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8">
                 {recipe.herbs.map(herb => <div key={herb.name} className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-1 border border-primary/10 bg-bg-light px-1.5 py-1 text-[15px] leading-5 sm:text-base">
-                  <dt className="min-w-0 break-words font-medium">{herb.name}</dt>
-                  <dd className="whitespace-nowrap font-bold tabular-nums">{grams(herb.dailyGrams * days)}g</dd>
+                  <dt className="min-w-0 break-words font-bold text-primary">{herb.name}</dt>
+                  <RecipeDoseAmount amount={herb.dailyGrams * days} />
                 </div>)}
               </dl>
             </div>
