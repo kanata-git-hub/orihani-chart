@@ -30,28 +30,50 @@ export class RecipeError extends Error {
 
 const text = (value: unknown) => value == null ? '' : String(value).trim();
 const key = (value: unknown) => text(value).normalize('NFKC').replace(/\s+/g, '').toLowerCase();
+const herbKey = (value: unknown) => ['마황', '마황고용량'].includes(key(value)) ? '마황' : key(value);
+const ephedraName = (value: unknown) => key(value) === '마황고용량' ? '마황 고용량' : '마황';
 const cleanHeader = (value: unknown) => key(value);
 const splitFormulas = (value: string) => value.split(/[+＋]/).map(text).filter(Boolean);
 const isEmptyModifier = (value: string) => !value || /^(?:없음|없다|해당없음|[-–—])$/.test(value.trim());
 
 function combinedParts(value: string) {
-  let formulas = value.trim();
+  let formulas = value.normalize('NFKC').trim();
   const modifiers: { additions?: string; removals?: string } = {};
   let invalid = false;
   // Only strip explicitly labelled trailing notes. Unlabelled ratios/instructions
   // remain in the formula text and must never be discarded as decoration.
-  while (true) {
-    const match = formulas.match(/\s*\(((?:가|감)\s*:[^()]*)\)\s*$/);
-    if (!match) break;
-    const chunks = match[1].split(/,\s*(?=(?:가|감)\s*:)/);
+  while (formulas.endsWith(')')) {
+    let depth = 0;
+    let start = -1;
+    for (let index = formulas.length - 1; index >= 0; index--) {
+      if (formulas[index] === ')') depth++;
+      else if (formulas[index] === '(' && --depth === 0) { start = index; break; }
+    }
+    if (start < 0) { invalid = true; break; }
+    const body = formulas.slice(start + 1, -1).trim();
+    if (!/^(?:가|감)\s*:/.test(body)) break;
+    const chunks: string[] = [];
+    let chunkStart = 0;
+    depth = 0;
+    for (let index = 0; index < body.length; index++) {
+      if (body[index] === '(') depth++;
+      else if (body[index] === ')') depth--;
+      else if (body[index] === ',' && depth === 0 && /^\s*(?:가|감)\s*:/.test(body.slice(index + 1))) {
+        chunks.push(body.slice(chunkStart, index).trim());
+        chunkStart = index + 1;
+      }
+      if (depth < 0) invalid = true;
+    }
+    if (depth !== 0) invalid = true;
+    chunks.push(body.slice(chunkStart).trim());
     for (const chunk of chunks) {
-      const note = chunk.match(/^(가|감)\s*:\s*(.+)$/);
+      const note = chunk.match(/^(가|감)\s*:\s*([\s\S]+)$/);
       if (!note) { invalid = true; continue; }
       const field = note[1] === '가' ? 'additions' : 'removals';
       if (modifiers[field] !== undefined) invalid = true;
       modifiers[field] = text(note[2]);
     }
-    formulas = formulas.slice(0, match.index).trim();
+    formulas = formulas.slice(0, start).trim();
   }
   return { formulas, ...modifiers, invalid };
 }
@@ -151,6 +173,18 @@ function exactGrams(value: unknown, description: string): number {
   return grams;
 }
 
+function ephedraPackTarget(part: string): { name: string; perPackGrams: number; dailyGrams: number } | null {
+  const normalized = part.normalize('NFKC').trim();
+  const prefix = normalized.match(/^([^()]+?)\s*\(/);
+  if (!prefix || herbKey(prefix[1]) !== '마황') return null;
+  const match = normalized.match(/^([^()]+?)\s*\(\s*(\d+(?:\.\d+)?)\s*(?:g|그램)\s*\)$/i);
+  if (!match) throw new RecipeError(`'${part}'의 팩당 마황 용량을 확인해주세요. '마황(5g)' 또는 '마황 고용량(2.5g)'처럼 양수와 g 단위를 입력해주세요.`);
+  const perPackGrams = exactGrams(match[2], `${ephedraName(match[1])} 팩당 용량`);
+  const dailyGrams = Number((perPackGrams * 2).toFixed(8));
+  if (!Number.isFinite(dailyGrams) || dailyGrams <= 0) throw new RecipeError(`'${part}'의 팩당 마황 용량을 계산할 수 없습니다.`);
+  return { name: ephedraName(match[1]), perPackGrams, dailyGrams };
+}
+
 export function calculatePrescriptionRecipe(patient: PrescriptionPatient, herbRows: SheetRows): { herbs: { name: string; dailyGrams: number }[]; warnings: string[] } {
   if (!patient.formulas.length) throw new RecipeError('가장 최근 기록에 처방이 없습니다. 시트에 처방을 입력한 뒤 다시 조회해주세요.');
   const headers = (herbRows[0] || []).map(cleanHeader);
@@ -163,7 +197,7 @@ export function calculatePrescriptionRecipe(patient: PrescriptionPatient, herbRo
   const knownHerbs = new Map<string, string>();
   for (const row of herbRows.slice(1)) {
     const herb = text(row[herbIndex]);
-    if (herb) knownHerbs.set(key(herb), herb);
+    if (herb) knownHerbs.set(herbKey(herb), herb);
   }
   for (const formulaKey of formulaKeys) {
     const formulaRows = herbRows.slice(1).filter(row => key(row[formulaIndex]) === formulaKey);
@@ -173,30 +207,53 @@ export function calculatePrescriptionRecipe(patient: PrescriptionPatient, herbRo
     for (const row of formulaRows) {
       const name = text(row[herbIndex]);
       if (!name) throw new RecipeError(`'${formulaName}' 처방에 약재명이 비어 있습니다.`);
-      const herbKey = key(name);
-      if (seen.has(herbKey)) throw new RecipeError(`'${formulaName}' 처방에 '${name}' 약재가 중복 등록되어 있습니다. 원본 시트를 확인해주세요.`);
-      seen.add(herbKey);
+      const canonicalHerb = herbKey(name);
+      if (seen.has(canonicalHerb)) throw new RecipeError(`'${formulaName}' 처방에 '${name}' 약재가 중복 등록되어 있습니다. 원본 시트를 확인해주세요.`);
+      seen.add(canonicalHerb);
       const amount = exactGrams(row[amountIndex], `${formulaName} / ${name}`);
-      const current = recipe.get(herbKey);
-      if (!current || amount > current.dailyGrams) recipe.set(herbKey, { name, dailyGrams: amount });
+      const current = recipe.get(canonicalHerb);
+      if (!current || amount > current.dailyGrams) recipe.set(canonicalHerb, { name, dailyGrams: amount });
     }
   }
-  const modifierParts = (value: string) => value.split(/[,，、;；\n]/).map(text).filter(Boolean);
+  const warnings: string[] = [];
+  let ephedraDirectiveSeen = false;
+  let ephedraPackTargetSeen = false;
+  let hasDailyAdditions = false;
+  let hasOrdinaryRemovals = false;
+  const claimEphedraDirective = (canonicalHerb: string, isPackTarget = false) => {
+    if (canonicalHerb !== '마황') return;
+    if (ephedraDirectiveSeen && (ephedraPackTargetSeen || isPackTarget)) throw new RecipeError('마황 지시가 가/감 또는 마황 고용량 별칭으로 중복되어 있습니다. 하나의 마황 지시만 남겨주세요.');
+    ephedraDirectiveSeen = true;
+    ephedraPackTargetSeen ||= isPackTarget;
+  };
+  const applyPackTarget = (target: { name: string; perPackGrams: number; dailyGrams: number }, removal = false) => {
+    claimEphedraDirective('마황', true);
+    if (!knownHerbs.has('마황')) throw new RecipeError(`'${target.name}'를 약재 시트에서 찾지 못했습니다.`);
+    if (removal && !recipe.has('마황')) throw new RecipeError(`감(감량 약재) '${target.name}'는 현재 처방에 없습니다. 새로 넣으려면 가 칸에 팩당 용량을 입력해주세요.`);
+    // This explicitly configured per-pack target replaces the complete daily amount.
+    recipe.set('마황', { name: target.name, dailyGrams: target.dailyGrams });
+    warnings.push(`${target.name}: ${target.perPackGrams}g/팩 × 2팩 = ${target.dailyGrams}g/일을 최종량으로 적용했습니다.`);
+  };
+  const modifierParts = (value: string) => value.normalize('NFKC').split(/[,、;\n]/).map(text).filter(Boolean);
   if (!isEmptyModifier(patient.additions)) {
     const parts = modifierParts(patient.additions);
     if (!parts.length) throw new RecipeError('가(추가 약재) 표기를 확인해주세요.');
     const seen = new Set<string>();
     for (const part of parts) {
+      const packTarget = ephedraPackTarget(part);
+      if (packTarget) { applyPackTarget(packTarget); continue; }
       const match = part.match(/^([^\d+:：()]+?)\s*[:：]?\s*(\+?)(\d+(?:\.\d+)?)\s*(?:g|그램)?\s*(추가)?$/i);
-      if (!match) throw new RecipeError(`가(추가 약재) '${part}'를 계산할 수 없습니다. '약재명 2g' 형식으로 입력해주세요.`);
-      const herbKey = key(match[1]);
-      if (!knownHerbs.has(herbKey)) throw new RecipeError(`가(추가 약재) '${text(match[1])}'를 약재 시트에서 찾지 못했습니다.`);
-      if (seen.has(herbKey)) throw new RecipeError(`가(추가 약재)에 '${text(match[1])}'가 중복되어 있습니다.`);
-      seen.add(herbKey);
+      if (!match) throw new RecipeError(`가(추가 약재) '${part}'의 용량이 없거나 표기가 올바르지 않습니다. 일반 약재는 '약재명 2g'(1일량), 팩당 마황은 '마황(5g)'처럼 입력해주세요.`);
+      const canonicalHerb = herbKey(match[1]);
+      claimEphedraDirective(canonicalHerb);
+      if (!knownHerbs.has(canonicalHerb)) throw new RecipeError(`가(추가 약재) '${text(match[1])}'를 약재 시트에서 찾지 못했습니다.`);
+      if (seen.has(canonicalHerb)) throw new RecipeError(`가(추가 약재)에 '${text(match[1])}'가 중복되어 있습니다.`);
+      seen.add(canonicalHerb);
       const extra = exactGrams(match[3], text(match[1]));
-      const current = recipe.get(herbKey);
+      const current = recipe.get(canonicalHerb);
       if (current && !match[2] && !match[4]) throw new RecipeError(`가(추가 약재) '${current.name}'는 이미 처방에 있습니다. 추가량인지 최종량인지 구분할 수 없어 계산을 중단했습니다. 추가하려면 '${current.name} +${extra}g' 또는 '${current.name} ${extra}g 추가'로 명시해주세요.`);
-      recipe.set(herbKey, { name: current?.name || knownHerbs.get(herbKey)!, dailyGrams: Number(((current?.dailyGrams || 0) + extra).toFixed(8)) });
+      recipe.set(canonicalHerb, { name: current?.name || (canonicalHerb === '마황' ? ephedraName(match[1]) : knownHerbs.get(canonicalHerb)!), dailyGrams: Number(((current?.dailyGrams || 0) + extra).toFixed(8)) });
+      hasDailyAdditions = true;
     }
   }
   if (!isEmptyModifier(patient.removals)) {
@@ -204,12 +261,15 @@ export function calculatePrescriptionRecipe(patient: PrescriptionPatient, herbRo
     if (!parts.length) throw new RecipeError('감(제외 약재) 표기를 확인해주세요.');
     const seen = new Set<string>();
     for (const part of parts) {
+      const packTarget = ephedraPackTarget(part);
+      if (packTarget) { applyPackTarget(packTarget, true); continue; }
       const fraction = part.match(/^([^\d()]+?)\s+(\d+)\s*\/\s*(\d+)$/);
-      const herbKey = key(fraction ? fraction[1] : part);
-      if (seen.has(herbKey)) throw new RecipeError(`감(제외 약재)에 '${part}'가 중복되어 있습니다.`);
-      seen.add(herbKey);
-      if (!recipe.has(herbKey)) throw new RecipeError(`감(제외 약재) '${part}'를 확인해주세요. 현재 레시피의 약재명 또는 '약재명 1/2' 형태의 남길 비율만 계산할 수 있습니다.`);
-      const current = recipe.get(herbKey)!;
+      const canonicalHerb = herbKey(fraction ? fraction[1] : part);
+      claimEphedraDirective(canonicalHerb);
+      if (seen.has(canonicalHerb)) throw new RecipeError(`감(제외 약재)에 '${part}'가 중복되어 있습니다.`);
+      seen.add(canonicalHerb);
+      if (!recipe.has(canonicalHerb)) throw new RecipeError(`감(제외 약재) '${part}'를 확인해주세요. 현재 레시피의 약재명 또는 '약재명 1/2' 형태의 남길 비율만 계산할 수 있습니다.`);
+      const current = recipe.get(canonicalHerb)!;
       if (fraction) {
         const numerator = Number(fraction[2]);
         const denominator = Number(fraction[3]);
@@ -217,15 +277,15 @@ export function calculatePrescriptionRecipe(patient: PrescriptionPatient, herbRo
           throw new RecipeError(`감(감량 약재) '${part}'의 남길 비율은 0에서 1 사이여야 합니다.`);
         }
         const amount = Number((current.dailyGrams * numerator / denominator).toFixed(8));
-        if (amount > 0) recipe.set(herbKey, { ...current, dailyGrams: amount });
-        else recipe.delete(herbKey);
-      } else recipe.delete(herbKey);
+        if (amount > 0) recipe.set(canonicalHerb, { ...current, dailyGrams: amount });
+        else recipe.delete(canonicalHerb);
+      } else recipe.delete(canonicalHerb);
+      hasOrdinaryRemovals = true;
     }
   }
   if (!recipe.size) throw new RecipeError('가감 후 약재가 남지 않습니다. 처방을 확인해주세요.');
-  const warnings: string[] = [];
-  if (!isEmptyModifier(patient.additions)) warnings.push('가: 표기된 g만큼 1일 용량에 추가했습니다.');
-  if (!isEmptyModifier(patient.removals)) warnings.push('감: 약재명만 있으면 완전 제외, N/D 비율이 있으면 해당 비율만큼 남겼습니다.');
+  if (hasDailyAdditions) warnings.push('일반 가: 표기된 g만큼 1일 용량에 추가했습니다.');
+  if (hasOrdinaryRemovals) warnings.push('일반 감: 약재명만 있으면 완전 제외, N/D 비율이 있으면 해당 비율만큼 남겼습니다.');
   if (!dateValue(patient.date)) warnings.push('유효한 날짜가 없는 기록은 시트의 아래 행을 최근 기록으로 선택합니다.');
   return { herbs: [...recipe.values()], warnings };
 }
