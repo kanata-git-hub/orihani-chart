@@ -16,7 +16,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm audit fix --package-lock-only --ignore-scripts
+      - run: npm install --package-lock-only --ignore-scripts
       - run: npm audit --audit-level=low
       - name: Commit resolved lockfile on this branch
         run: |
