@@ -9,7 +9,7 @@ import { once } from 'node:events';
 
 const headers = { 'Content-Type': 'application/json', Authorization: 'Bearer synthetic-app-token-long-enough' };
 
-async function startServer() {
+async function startServer(fixture = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'chart-recipe-'));
   const preload = join(directory, 'mock.mjs');
   const trace = join(directory, 'requests.jsonl');
@@ -17,6 +17,7 @@ async function startServer() {
     import assert from 'node:assert/strict';
     import { appendFileSync } from 'node:fs';
     const trace = ${JSON.stringify(trace)};
+    const fixture = ${JSON.stringify(fixture)};
     const reply = (body, status = 200) => new Response(JSON.stringify(body), { status });
     const header = ['성함','번호','나이','성별','상태','현재/총기간','결제일','배송일','1차 문자발송','1차','2차 문자발송','2차','증상','처방','처방2','처방3','가','감','처방 조합'];
     let patientReads = 0;
@@ -35,6 +36,8 @@ async function startServer() {
       if (token === 'Bearer synthetic-forbidden-google') return reply({ error: 'upstream private details' }, 403);
       if (token === 'Bearer synthetic-failed-google') throw Error('upstream secret detail');
       assert.ok(['Bearer synthetic-google', 'Bearer synthetic-missing-formula'].includes(token));
+      if (fixture.patientRecord && range.endsWith('!A1:V')) return reply({ values: [header, fixture.patientRecord] });
+      if (fixture.herbRows && range.endsWith('!A1:D')) return reply({ values: fixture.herbRows });
       if (range === "'한약환자'!A1:V") {
         patientReads++;
         const formula = token === 'Bearer synthetic-missing-formula' ? '없는처방' : patientReads > 1 ? '테스트처방나' : '테스트처방가';
@@ -130,5 +133,55 @@ test('recipe errors are uncached, preserve token-expiry semantics, and never exp
     const emptyName = await server.request('prescription-patients', { accessToken: 'synthetic-google', name: '' });
     assert.equal(emptyName.status, 400);
     assert.equal(emptyName.headers.get('Cache-Control'), 'no-store');
+  } finally { await server.close(); }
+});
+
+test('recipe HTTP uses live per-pack ephedra targets from columns and nested combined text, never caller overrides', async () => {
+  const herbRows = [
+    ['번호', '처방명', '약재명', '함량'],
+    [1, '테스트처방', '마황', 3],
+    [1, '테스트처방', '테스트약재', 2],
+  ];
+  for (const scenario of [
+    { additions: '마황(5g)', removals: '', combined: '테스트처방', herbName: '마황', dailyGrams: 10 },
+    { additions: '', removals: '마황 고용량(2.5g)', combined: '테스트처방', herbName: '마황 고용량', dailyGrams: 5 },
+    { additions: '마황(5g)', removals: '', combined: '테스트처방 (가: 마황(5g))', herbName: '마황', dailyGrams: 10 },
+    { additions: '', removals: '마황 고용량(2.5g)', combined: '테스트처방 (감: 마황 고용량(2.5g))', herbName: '마황 고용량', dailyGrams: 5 },
+  ]) {
+    const patientRecord = ['테스트환자', '101', '40', '여', '', '', '2026-10-30', '', '', '', '', '', '테스트증상', '테스트처방', '', '', scenario.additions, scenario.removals, scenario.combined];
+    const server = await startServer({ patientRecord, herbRows });
+    try {
+      const response = await server.request('prescription-recipe', {
+        accessToken: 'synthetic-google', patientId: 'chart:101',
+        additions: '마황(99g)', removals: '마황',
+        herbs: [{ name: '마황', dailyGrams: 999 }],
+      });
+      assert.equal(response.status, 200, scenario.combined + ' / ' + scenario.additions + scenario.removals);
+      assert.equal(response.headers.get('Cache-Control'), 'no-store');
+      const result = await response.json();
+      assert.deepEqual(result.herbs.find(herb => herb.name === scenario.herbName), {
+        name: scenario.herbName, dailyGrams: scenario.dailyGrams,
+      });
+      assert.equal(result.herbs.filter(herb => herb.name.startsWith('마황')).length, 1);
+      assert.deepEqual(result.herbs.find(herb => herb.name === '테스트약재'), { name: '테스트약재', dailyGrams: 2 });
+      assert.equal(result.herbs.length, 2);
+      assert.ok(result.warnings.some(warning => warning.includes(`${scenario.dailyGrams}g/일`) && warning.includes('최종량')));
+    } finally { await server.close(); }
+  }
+});
+
+test('an unresolved additional herb still rejects the entire HTTP recipe alongside a valid ephedra target', async () => {
+  const server = await startServer({
+    patientRecord: ['테스트환자', '101', '40', '여', '', '', '2026-10-30', '', '', '', '', '', '테스트증상', '테스트처방', '', '', '마황(5g), 테스트약재', '', '테스트처방'],
+    herbRows: [['번호', '처방명', '약재명', '함량'], [1, '테스트처방', '마황', 3], [1, '테스트처방', '테스트약재', 2]],
+  });
+  try {
+    const response = await server.request('prescription-recipe', { accessToken: 'synthetic-google', patientId: 'chart:101' });
+    assert.equal(response.status, 422);
+    assert.equal(response.headers.get('Cache-Control'), 'no-store');
+    const result = await response.json();
+    assert.equal(typeof result.error, 'string');
+    assert.equal(result.herbs, undefined);
+    assert.equal(result.patient, undefined);
   } finally { await server.close(); }
 });

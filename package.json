@@ -49,6 +49,9 @@
     "tsx": {
       "esbuild": "^0.28.1"
     },
-    "@grpc/grpc-js": "1.14.7"
+    "@grpc/grpc-js": "1.14.7",
+    "googleapis-common": {
+      "gaxios": "7.1.4"
+    }
   }
 }

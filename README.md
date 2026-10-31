@@ -36,8 +36,8 @@ number; a historical symptom match still opens that patient's newest record.
 Payment date takes precedence, with delivery date and sheet row as fallbacks.
 
 Each recipe request reads the latest patient row and the current herb catalog
-again. Formula duplicates use the larger daily amount. The daily recipe is shown
-with collapsed 7-, 15- and 30-day totals. Unknown formulas, missing quantities or
+again. Formula duplicates use the larger daily amount. The daily, 7-, 15- and
+30-day herb panels start collapsed, with their total grams visible. Unknown formulas, missing quantities or
 ambiguous modifications produce an error instead of an incomplete recipe. This
 read-only lookup does not call an AI provider or write patient data to the sheet.
 The compact herb grid uses three columns on phones and up to eight on desktops.
@@ -45,6 +45,12 @@ Searches, selected recipes and expanded day panels are saved in the browser per
 signed-in account. Refreshing or switching menus restores the previous view;
 restored recipes show their lookup timestamp and can be refreshed from the sheet.
 The recipe tab's clear button removes its saved state.
+Parenthesized `마황(5g)` and `마황 고용량(2.5g)` modifiers in either 가 or 감
+specify the final amount per pack. Two packs per day give 10g/day and 5g/day,
+respectively; this replaces any base ephedra amount before multiplying by days.
+The high-dose label uses the same ephedra ingredient identity to avoid duplicates.
+Other additions use explicit daily grams. An addition without a quantity stops
+calculation; a bare removal excludes the whole herb, while `N/D` retains that ratio.
 Run `npm run test:recipe` for calculation and HTTP regression checks.
 
 Configure `OPENAI_API_KEY` in the runtime environment of each deployed Cloud Run
