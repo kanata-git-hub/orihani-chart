@@ -1,0 +1,108 @@
+name: One-time supported runtime validation
+on:
+  push:
+    branches: ['audit/validation-runtime-ubuntu-20261103']
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        renderer: [source, wheel]
+    env:
+      SOURCE_SHA: 0601bfff971c1a19ab1fd57d51a019f10bef5741
+      RENDERER: ${{ matrix.renderer }}
+    steps:
+      - name: Prepare a local runtime from the official distributions
+        run: |
+          git init -q app
+          git -C app fetch --quiet --no-tags --depth=1 https://github.com/kanata-git-hub/orihani-shorts.git "$SOURCE_SHA"
+          git -C app checkout --quiet --detach FETCH_HEAD
+          test "$(git -C app rev-parse HEAD)" = "$SOURCE_SHA"
+          docker pull --platform linux/amd64 ubuntu:26.04 >/dev/null
+          UBUNTU=$(docker image inspect --format '{{index .RepoDigests 0}}' ubuntu:26.04)
+          [[ "$UBUNTU" =~ ^ubuntu@sha256:[0-9a-f]{64}$ ]]
+          export UBUNTU
+          echo "UBUNTU_BASE $UBUNTU"
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          p=Path('app/Dockerfile'); lines=p.read_text().splitlines()
+          assert sum(l.startswith('FROM ') for l in lines)==1 and sum(l.startswith('RUN apt-get') for l in lines)==1 and 'USER node' in lines
+          ubuntu=os.environ['UBUNTU']
+          src=os.environ['RENDERER']=='source'
+          deps='python3 python3-pip' + (' build-essential python3-dev python3-setuptools python3-wheel python3-pybind11 pkg-config libfreetype-dev libjpeg-dev zlib1g-dev' if src else '')
+          flags='--no-binary=pillow --no-build-isolation' if src else '--only-binary=:all:'
+          hashes='cdcd1ba258178f7356d74170c9a81ba4eab6a5d55748bc402a5a2a6fe6be3510' if src else 'e91c2b1cbeae768c98752e67e717e283d68dae45717b41f2d91eaee648e37b7d'
+          build=['FROM node:22-trixie-slim@sha256:b0ea3309e53992217c31c10aea3ef3ce47c3fffba7416a1e4a5a60b60373b1ed AS node-runtime',
+                 'FROM '+ubuntu+' AS caption-build',
+                 'RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends '+deps+' ca-certificates && rm -rf /var/lib/apt/lists/*',
+                 "RUN echo 'pillow==13.0.0 --hash=sha256:"+hashes+"' > /tmp/renderer.txt && python3 -m pip --isolated --disable-pip-version-check install --index-url https://pypi.org/simple --require-hashes --no-deps --no-cache-dir --no-compile "+flags+" --target /opt/ori-caption -r /tmp/renderer.txt"]
+          out=[]
+          for line in lines:
+              if line.startswith('FROM '):
+                  out+=['FROM '+ubuntu,'COPY --from=node-runtime /usr/local/ /usr/local/'];continue
+              if line.startswith('RUN apt-get'):
+                  runtime="ffmpeg fontconfig fonts-noto-cjk python3 tzdata libstdc++6 libatomic1 ca-certificates" + (" libfreetype6 libjpeg-turbo8 zlib1g" if src else "")
+                  out+=['RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends '+runtime+' && rm -rf /var/lib/apt/lists/*','COPY --from=caption-build /opt/ori-caption /opt/ori-caption',
+                        "RUN python3 -c \"import site,pathlib; p=pathlib.Path(site.getsitepackages()[0]); p.mkdir(parents=True,exist_ok=True); (p/'ori-caption.pth').write_text('/opt/ori-caption'+chr(10))\" && groupadd -g 10001 node && useradd -u 10001 -g node -m -s /usr/sbin/nologin node"]
+                  continue
+              out.append(line)
+          p.write_text('\n'.join(build+out)+'\n')
+          PY
+          docker build --platform linux/amd64 --quiet -t shorts-diag:local app
+          docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges shorts-diag:local sh -ec '
+            node --version; python3 --version; ffmpeg -version | head -1
+            ! dpkg-query -W python3-pil 2>/dev/null
+            test -z "${PYTHONPATH:-}"
+            dpkg-query -W | grep -E "^(libglib2\.0-|libxml2|libaom|libmbed|libsqlite3|zlib1g|libminizip|freetype|libfreetype|libjpeg|ffmpeg)" | sort
+            env -u PYTHONPATH python3 -c "import PIL,glob; from PIL import features; assert PIL.__version__==\"13.0.0\" and PIL.__file__.startswith(\"/opt/ori-caption/\"); print(\"PIL_OK\", PIL.__version__,features.version(\"freetype2\"),len(glob.glob(\"/opt/ori-caption/pillow.libs/*\")))"
+          '
+      - name: Audit OS and retain minimum private evidence
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSL --retry 3 -o trivy.tar.gz 'https://github.com/aquasecurity/trivy/releases/download/v0.76.1/trivy_0.76.1_Linux-64bit.tar.gz'
+          echo 'c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0  trivy.tar.gz' | sha256sum -c -
+          tar -xzf trivy.tar.gz trivy
+          ./trivy image --image-src docker --scanners vuln --pkg-types os --list-all-pkgs --no-progress --format json -o findings.json shorts-diag:local
+          ./trivy --version
+          node - <<'NODE'
+          const fs=require('node:fs'),crypto=require('node:crypto'),zip=require('node:zlib');
+          const doc=JSON.parse(fs.readFileSync('findings.json'));
+          const results=doc.Results.filter(x=>x.Class==='os-pkgs');
+          if(results.length!==1||!results[0].Packages?.length)throw Error('Incomplete OS inventory');
+          const s=results[0], v=s.Vulnerabilities||[], keep=v.filter(x=>['CRITICAL','HIGH'].includes(x.Severity)||x.FixedVersion);
+          const packages=s.Packages.map(x=>({n:x.Name,v:x.Version,r:x.Release,src:x.SrcName,sv:x.SrcVersion,sr:x.SrcRelease}));
+          const vs=keep.map(x=>({id:x.VulnerabilityID,n:x.PkgName,v:x.InstalledVersion,f:x.FixedVersion||'',s:x.Severity,src:x.SeveritySource||'',status:x.Status,title:x.Title||'',url:x.PrimaryURL||'',vendor:x.VendorSeverity||{}}));
+          const os=doc.Metadata.OS;
+          const counts={}; for (const x of v){const k=x.Severity+(x.FixedVersion?':fixable':':no-fix');counts[k]=(counts[k]||0)+1;}
+          console.log('OS_SUMMARY',JSON.stringify({os,packages:packages.length,counts,distinctCritical:new Set(vs.filter(x=>x.s==='CRITICAL').map(x=>x.id)).size,distinctHighCritical:new Set(vs.filter(x=>['CRITICAL','HIGH'].includes(x.s)).map(x=>x.id)).size}));
+          const pub=crypto.createPublicKey({key:Buffer.from('MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzxPlyikh2FvZ6WzpDV0yYt6sLgwqkGhGTbQxhWwnkbMK/CKMzKuT4BEthnbfmE4dD67gshc6Lq2VyLPXcBs4f6XdQMwx9YXdj1tLXiLmH1Wfmg32bDvnf6jgdyUQbk33s2Lk5pUTodtFKTbm9Yhht2BK0J3Vjfxf96SrkMiaRguSsqLI5jiqC+hIjGZwjxjGNutyNaZbLuQ1nak1bJb039gnalPut3+Rh1Td63WL9tMAaOliv3fG3dybs/iriRV47dkV5bmfY+yk48FdhjXzSSIEl0grn3+m3ChtmJRRm9Yt3AEQoT9dBGuOs2XD3TmdOqWjDDqQLNdOPX2S8c75lQIDAQAB','base64'),format:'der',type:'spki'});
+          const key=crypto.randomBytes(32),nonce=crypto.randomBytes(12),cipher=crypto.createCipheriv('aes-256-gcm',key,nonce);
+          const blob=Buffer.concat([cipher.update(zip.gzipSync(Buffer.from(JSON.stringify({os,packages,vs,counts})))),cipher.final()]);
+          const wrapped=crypto.publicEncrypt({key:pub,oaepHash:'sha256'},key);
+          const payload=Buffer.concat([wrapped,nonce,cipher.getAuthTag(),blob]).toString('base64');
+          for(let i=0;i<payload.length;i+=1500) console.log('SEALED_OS '+payload.slice(i,i+1500));
+          NODE
+      - name: Execute candidate's complete synthetic media suite
+        run: |
+          docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges --tmpfs /app/.editor-test:rw,exec,mode=1777,size=3g --mount type=bind,source="$PWD/app/tests",target=/app/tests,readonly --env FFMPEG_PATH=ffmpeg --env EDITOR_PYTHON_PATH=python3 shorts-diag:local sh -ec '
+            test "$(id -u)" -ne 0
+            ffmpeg -version | head -1
+            fc-match -f "%{family}\n" "Kyobo Handwriting 2024"
+            python3 -c "from PIL import Image; print(Image.new(\"RGBA\",(32,32)).size)"
+            npm run test:security > /tmp/security.log || { tail -25 /tmp/security.log; exit 1; }
+            for suite in editor character-reference background-assets scene-reference video-prompt story-direction production-continuity production-package weekly-images weekly-additions clinic-weekly clinic-reserves kling4 image-quality; do
+              echo "SUITE $suite"
+              if ! node --test "tests/$suite.test.cjs" > /tmp/test.log 2>&1; then
+                grep -E "^(not ok|# Error|# fail|  error:)" /tmp/test.log || true
+                tail -28 /tmp/test.log
+                exit 1
+              fi
+              grep -E "^# (tests|pass|fail|skipped|todo) " /tmp/test.log
+              grep -q "^# skipped 0" /tmp/test.log
+            done
+          '
