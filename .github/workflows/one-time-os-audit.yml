@@ -1,82 +1,101 @@
-name: One-time OS package audit
+name: One-time media OS comparison
 on:
   push:
     branches: ['audit/one-time-os-inventory-20261103']
 permissions:
   contents: read
 jobs:
-  scan:
+  compare:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
         include:
-          - repo: orihani-chart
-            commit: f66f1ca20945969bd5a96b147807476f6b5ebc82
-            tag: 22-alpine
-            digest: sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
-          - repo: orihani-cs
-            commit: 3dd9c0e4e86509a279a5666b96181c299167059c
-            tag: 22-alpine
-            digest: sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
-          - repo: orihani_translate
-            commit: 2e1904f47175a34517a4ae04a04b7db3d0ec7ed3
-            tag: 22-alpine
-            digest: sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
           - repo: orihani-shorts
-            commit: c9f5f9850253696d48eb7d986a7dada7ce662271
-            tag: 22-slim
-            digest: sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da
+            commit: f9de726bb3b20571c43589c68104e5bf343f9d3b
           - repo: orihani-marketing
-            commit: 33936d61c2af4556313e61c14f193793f1fac8e1
-            tag: 22-slim
-            digest: sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da
+            commit: 5804f285a88388e87f362114cbf3809352858b44
     env:
       REPOSITORY: ${{ matrix.repo }}
       SOURCE_COMMIT: ${{ matrix.commit }}
-      BASE_TAG: ${{ matrix.tag }}
-      BASE_DIGEST: ${{ matrix.digest }}
+      BOOKWORM: sha256:9f0dde62d10e7ff7a310ecaebd66225f6b46c17e6cb778449a77b05d3541bea2
+      TRIXIE: sha256:b0ea3309e53992217c31c10aea3ef3ce47c3fffba7416a1e4a5a60b60373b1ed
     steps:
-      - name: Read immutable public source
+      - name: Read exact post-fix public source
         run: |
           git init -q app
           git -C app fetch --quiet --no-tags --depth=1 "https://github.com/kanata-git-hub/$REPOSITORY.git" "$SOURCE_COMMIT"
           git -C app checkout --quiet --detach FETCH_HEAD
           test "$(git -C app rev-parse HEAD)" = "$SOURCE_COMMIT"
-      - name: Build a local production-equivalent image at the recorded Linux base digest
-        run: |
-          sed "s|^FROM node:$BASE_TAG|FROM node:$BASE_TAG@$BASE_DIGEST|" app/Dockerfile > "$RUNNER_TEMP/scan.Dockerfile"
-          awk -v base="node:$BASE_TAG@$BASE_DIGEST" 'toupper($1)=="FROM" { gsub(/\r/,"",$2); if($2!=base) exit 1; n++ } END { if(!n) exit 1 }' "$RUNNER_TEMP/scan.Dockerfile"
-          docker build --platform linux/amd64 --quiet -f "$RUNNER_TEMP/scan.Dockerfile" -t one-time-os-scan:local app
-      - name: Install checksum-verified scanner
+          grep 'apt-get install .*tzdata' app/Dockerfile
+      - name: Install checksum-verified OS scanner
         run: |
           cd "$RUNNER_TEMP"
-          curl --fail --silent --show-error --location --retry 3 -o trivy.tar.gz 'https://github.com/aquasecurity/trivy/releases/download/v0.76.1/trivy_0.76.1_Linux-64bit.tar.gz'
+          curl -fsSL --retry 3 -o trivy.tar.gz 'https://github.com/aquasecurity/trivy/releases/download/v0.76.1/trivy_0.76.1_Linux-64bit.tar.gz'
           echo 'c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0  trivy.tar.gz' | sha256sum -c -
           tar -xzf trivy.tar.gz trivy
           ./trivy --version
-      - name: Check OS packages and print remediation summary
+      - name: Build and scan patched image and comparison image locally
+        run: |
+          for release in bookworm trixie; do
+            if [ "$release" = bookworm ]; then digest="$BOOKWORM"; else digest="$TRIXIE"; fi
+            sed "s|^FROM node:22-slim|FROM node:22-$release-slim@$digest|" app/Dockerfile > "$RUNNER_TEMP/$release.Dockerfile"
+            grep -q "^FROM node:22-$release-slim@$digest" "$RUNNER_TEMP/$release.Dockerfile"
+            docker build --platform linux/amd64 --quiet -f "$RUNNER_TEMP/$release.Dockerfile" -t "media-os:$release" app
+            "$RUNNER_TEMP/trivy" image --image-src docker --scanners vuln --pkg-types os --list-all-pkgs --no-progress --format json -o "$RUNNER_TEMP/$release.json" "media-os:$release"
+            docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges "media-os:$release" sh -ec '
+              for exe in ffmpeg ffprobe fc-match; do ldd "$(command -v "$exe")"; done |
+                awk "/=> \\// {print \$3} /^\\s*\\// {print \$1}" | sort -u |
+                while read -r lib; do real=$(readlink -f "$lib"); dpkg-query -S "$lib" 2>/dev/null || dpkg-query -S "$real" 2>/dev/null || true; done |
+                cut -d: -f1 | sort -u
+            ' > "$RUNNER_TEMP/$release-linked.txt"
+          done
+      - name: Compare unique advisories and media-linked packages
         run: |
           cd "$RUNNER_TEMP"
-          ./trivy image --image-src docker --scanners vuln --pkg-types os --list-all-pkgs --no-progress --format json -o findings.json one-time-os-scan:local
           python - <<'PY'
-          import json
-          from collections import Counter, defaultdict
-          result = json.load(open("findings.json"))
-          systems = [s for s in result.get("Results", []) if s.get("Class") == "os-pkgs"]
-          if not systems or not any(s.get("Packages") for s in systems): raise SystemExit("No operating-system inventory detected")
-          severities = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN")
-          for system in systems:
-              rows = system.get("Vulnerabilities", [])
-              counts = Counter((r["Severity"], bool(r.get("FixedVersion"))) for r in rows)
-              fixes = defaultdict(set)
+          import collections,json
+          groups={}
+          for release in ('bookworm','trixie'):
+              d=json.load(open(release+'.json'))
+              systems=[s for s in d['Results'] if s.get('Class')=='os-pkgs']
+              assert len(systems)==1 and systems[0].get('Packages')
+              rows=systems[0].get('Vulnerabilities', [])
+              linked=set(open(release+'-linked.txt').read().splitlines())|{'ffmpeg','fontconfig'}
+              high,crit,hit={},set(),set()
+              counts=collections.Counter()
+              pkgs=collections.defaultdict(set)
               for row in rows:
-                  if row.get("FixedVersion"):
-                      fixes[(row["PkgName"], row["InstalledVersion"], row["FixedVersion"])].add(row["Severity"])
-              print("OS_RESULT", system["Type"], "packages", len(system["Packages"]), "findings", len(rows))
-              for sev in severities:
-                  print("OS_COUNT", sev, "fixable", counts[sev, True], "without-fix", counts[sev, False])
-              for (name, old, new), levels in sorted(fixes.items()):
-                  print("OS_FIX", name, old, new, ",".join(sorted(levels)))
+                  sev=row["Severity"]; vid=row["VulnerabilityID"]; fix=row.get("FixedVersion")
+                  counts[(sev, bool(fix))]+=1
+                  if fix: print("OS_FIX",release,row["PkgName"],row["InstalledVersion"],fix,sev)
+                  if sev not in ('HIGH','CRITICAL'): continue
+                  high[vid]=sev
+                  if sev=='CRITICAL': crit.add(vid)
+                  if row["PkgName"] in linked:
+                      hit.add(vid); pkgs[row.get('SrcName') or row['PkgName']].add(vid)
+              groups[release]=(set(high),crit,hit)
+              print("OS_COMPARE",release,"packages",len(systems[0]["Packages"]),"allRows",len(rows),"distinctHighCritical",len(high),"distinctCritical",len(crit),"distinctInLinkedPackages",len(hit),"linkedPackages",len(linked))
+              for sev in ("CRITICAL","HIGH","MEDIUM","LOW","UNKNOWN"): print("OS_COUNTS",release,sev,"fixable",counts[sev,True],"unfixed",counts[sev,False])
+              for pkg,vids in sorted(pkgs.items(),key=lambda p:-len(p[1]))[:12]: print("OS_GROUP",release,pkg,len(vids))
+          for idx,label in enumerate(('highCritical','critical','linkedHighCritical')):
+              b,t=(groups[k][idx] for k in ('bookworm','trixie'))
+              print("OS_DELTA",label,"bookwormOnly",len(b-t),"shared",len(b&t),"trixieOnly",len(t-b))
           PY
+      - name: Execute real editor rendering and security tests on both images
+        run: |
+          failed=0
+          for release in bookworm trixie; do
+            echo "Testing $release"
+            docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges --tmpfs /app/.editor-test:rw,exec,mode=1777,size=2g --mount type=bind,source="$PWD/app/tests",target=/app/tests,readonly --env FFMPEG_PATH=ffmpeg "media-os:$release" sh -ec '
+              ffmpeg -version | head -1
+              fc-match -f "%{family}\n" "Kyobo Handwriting 2024"
+              node -v
+              if command -v python3 >/dev/null; then python3 -c "from PIL import Image; print(Image.new(\"RGBA\",(32,32)).size)" ; fi
+              npm run test:security >/tmp/security.log || { grep -E "^(not ok|# Error|# fail)" /tmp/security.log; exit 1; }
+              node --test tests/editor.test.cjs >/tmp/editor.log || { grep -E "^(not ok|# Error|# fail|  error:)" /tmp/editor.log; exit 1; }
+              grep -E "^# (tests|pass|fail|skipped|todo) " /tmp/editor.log
+            ' || failed=1
+          done
+          exit "$failed"
