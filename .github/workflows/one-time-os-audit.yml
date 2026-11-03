@@ -1,0 +1,82 @@
+name: One-time OS package audit
+on:
+  push:
+    branches: ['audit/one-time-os-inventory-20261103']
+permissions:
+  contents: read
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - repo: orihani-chart
+            commit: f66f1ca20945969bd5a96b147807476f6b5ebc82
+            tag: 22-alpine
+            digest: sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
+          - repo: orihani-cs
+            commit: 3dd9c0e4e86509a279a5666b96181c299167059c
+            tag: 22-alpine
+            digest: sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
+          - repo: orihani_translate
+            commit: 2e1904f47175a34517a4ae04a04b7db3d0ec7ed3
+            tag: 22-alpine
+            digest: sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
+          - repo: orihani-shorts
+            commit: c9f5f9850253696d48eb7d986a7dada7ce662271
+            tag: 22-slim
+            digest: sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da
+          - repo: orihani-marketing
+            commit: 33936d61c2af4556313e61c14f193793f1fac8e1
+            tag: 22-slim
+            digest: sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da
+    env:
+      REPOSITORY: ${{ matrix.repo }}
+      SOURCE_COMMIT: ${{ matrix.commit }}
+      BASE_TAG: ${{ matrix.tag }}
+      BASE_DIGEST: ${{ matrix.digest }}
+    steps:
+      - name: Read immutable public source
+        run: |
+          git init -q app
+          git -C app fetch --quiet --no-tags --depth=1 "https://github.com/kanata-git-hub/$REPOSITORY.git" "$SOURCE_COMMIT"
+          git -C app checkout --quiet --detach FETCH_HEAD
+          test "$(git -C app rev-parse HEAD)" = "$SOURCE_COMMIT"
+      - name: Build a local production-equivalent image at the recorded Linux base digest
+        run: |
+          sed -E "s|^(FROM node:$BASE_TAG)([[:space:]]|$)|\\1@$BASE_DIGEST\\2|I" app/Dockerfile > "$RUNNER_TEMP/scan.Dockerfile"
+          awk -v base="node:$BASE_TAG@$BASE_DIGEST" 'toupper($1)=="FROM" { gsub(/\r/,"",$2); if($2!=base) exit 1; n++ } END { if(!n) exit 1 }' "$RUNNER_TEMP/scan.Dockerfile"
+          docker build --platform linux/amd64 --quiet -f "$RUNNER_TEMP/scan.Dockerfile" -t one-time-os-scan:local app
+      - name: Install checksum-verified scanner
+        run: |
+          cd "$RUNNER_TEMP"
+          curl --fail --silent --show-error --location --retry 3 -o trivy.tar.gz 'https://github.com/aquasecurity/trivy/releases/download/v0.76.1/trivy_0.76.1_Linux-64bit.tar.gz'
+          echo 'c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0  trivy.tar.gz' | sha256sum -c -
+          tar -xzf trivy.tar.gz trivy
+          ./trivy --version
+      - name: Check OS packages and print remediation summary
+        run: |
+          cd "$RUNNER_TEMP"
+          ./trivy image --image-src docker --scanners vuln --pkg-types os --list-all-pkgs --no-progress --format json -o findings.json one-time-os-scan:local
+          python - <<'PY'
+          import json
+          from collections import Counter, defaultdict
+          result = json.load(open("findings.json"))
+          systems = [s for s in result.get("Results", []) if s.get("Class") == "os-pkgs"]
+          if not systems or not any(s.get("Packages") for s in systems): raise SystemExit("No operating-system inventory detected")
+          severities = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN")
+          for system in systems:
+              rows = system.get("Vulnerabilities", [])
+              counts = Counter((r["Severity"], bool(r.get("FixedVersion"))) for r in rows)
+              fixes = defaultdict(set)
+              for row in rows:
+                  if row.get("FixedVersion"):
+                      fixes[(row["PkgName"], row["InstalledVersion"], row["FixedVersion"])].add(row["Severity"])
+              print("OS_RESULT", system["Type"], "packages", len(system["Packages"]), "findings", len(rows))
+              for sev in severities:
+                  print("OS_COUNT", sev, "fixable", counts[sev, True], "without-fix", counts[sev, False])
+              for (name, old, new), levels in sorted(fixes.items()):
+                  print("OS_FIX", name, old, new, ",".join(sorted(levels)))
+          PY
