@@ -1,4 +1,4 @@
-name: One-time Shorts residual OS evaluation
+name: One-time patched Shorts renderer validation
 on:
   push:
     branches: ['audit/one-time-os-inventory-20261103']
@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        release: [bookworm, trixie, alpine]
+        release: [wheel, source]
     env:
       RELEASE: ${{ matrix.release }}
       SOURCE_SHA: f1c7bf17cd07b2228458bf4023602a1b016f5697
@@ -26,17 +26,28 @@ jobs:
           from pathlib import Path
           import os
           release=os.environ["RELEASE"]
-          refs={"bookworm":"node:22-bookworm-slim@sha256:9f0dde62d10e7ff7a310ecaebd66225f6b46c17e6cb778449a77b05d3541bea2","trixie":"node:22-trixie-slim@sha256:b0ea3309e53992217c31c10aea3ef3ce47c3fffba7416a1e4a5a60b60373b1ed","alpine":"node:22-alpine@sha256:025b8e975a61d94e33abeafaad1255ef44e4898cf1a1b6446860009c72e6d284"}
+          base="node:22-alpine3.24@sha256:025b8e975a61d94e33abeafaad1255ef44e4898cf1a1b6446860009c72e6d284"
           p=Path("app/Dockerfile")
           lines=p.read_text().splitlines()
           assert sum(l.startswith("FROM ") for l in lines)==1 and sum(l.startswith("RUN apt-get") for l in lines)==1 and "USER node" in lines
+          binary=(release=="wheel")
+          build_deps="python3 py3-pip" if binary else "python3 python3-dev py3-pip py3-setuptools py3-wheel py3-pybind11 build-base freetype-dev fribidi-dev harfbuzz-dev libraqm-dev libjpeg-turbo-dev zlib-dev"
+          flags="--only-binary=:all:" if binary else "--no-binary=pillow --no-build-isolation"
+          hashes="--hash=sha256:f9bd7d260d986f3553518c5d723544346fa48031f8aef3265d786aeb59845bc0 --hash=sha256:7f6299e494e46253d40c34653cac369412f44ca53b5f85d848d3f95b1ed0546c" if binary else "--hash=sha256:cdcd1ba258178f7356d74170c9a81ba4eab6a5d55748bc402a5a2a6fe6be3510"
+          build=["FROM "+base+" AS caption-build",
+                 "RUN apk add --no-cache "+build_deps,
+                 "RUN echo 'pillow==13.0.0 "+hashes+"' > /tmp/caption-requirements.txt && python3 -m pip --disable-pip-version-check install --no-cache-dir --no-deps --no-compile --require-hashes "+flags+" --target /opt/ori-caption -r /tmp/caption-requirements.txt"]
           for i,line in enumerate(lines):
-              if line.startswith("FROM "): lines[i]="FROM "+refs[release]
-              if line.startswith("RUN apt-get") and release=="alpine":
-                  lines[i]="RUN apk add --no-cache ffmpeg fontconfig font-noto-cjk python3 py3-pillow tzdata"
-          p.write_text("\n".join(lines)+"\n")
+              if line.startswith("FROM "): lines[i]="FROM "+base
+              if line.startswith("RUN apt-get"):
+                  runtime=" ffmpeg fontconfig font-noto-cjk python3 tzdata"+("" if binary else " freetype fribidi harfbuzz libraqm libjpeg-turbo zlib")
+                  lines[i]="RUN apk add --no-cache"+runtime+"\nCOPY --from=caption-build /opt/ori-caption /opt/ori-caption\nENV PYTHONPATH=/opt/ori-caption"
+          p.write_text("\n".join(build+[""]+lines)+"\n")
           PY
           docker build --platform linux/amd64 --quiet -t shorts-diag:local app
+          docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges shorts-diag:local python3 -c "import PIL; from PIL import features; import glob; assert PIL.__version__=='13.0.0'; assert PIL.__file__.startswith('/opt/ori-caption/'); assert not glob.glob('/usr/lib/python*/site-packages/PIL'); print('CAPTION_PIL',PIL.__version__,features.version('freetype2'),features.version('jpg'),features.version('zlib'),features.check('raqm')); print('BUNDLED_NATIVE',sorted(x.rsplit('/',1)[-1] for x in glob.glob('/opt/ori-caption/pillow.libs/*')))"
+          docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges shorts-diag:local sh -ec '! apk info -e py3-pillow; ! apk info -e py3-pip; ! apk info -e build-base; apk info -v libxml2 ffmpeg python3'
+
       - name: Audit OS and retain minimum private evidence
         run: |
           cd "$RUNNER_TEMP"
@@ -64,7 +75,6 @@ jobs:
           for(let i=0;i<payload.length;i+=1500) console.log('SEALED_OS '+payload.slice(i,i+1500));
           NODE
       - name: Execute candidate's complete synthetic media suite
-        if: matrix.release == 'alpine'
         run: |
           docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges --tmpfs /app/.editor-test:rw,exec,mode=1777,size=3g --mount type=bind,source="$PWD/app/tests",target=/app/tests,readonly --env FFMPEG_PATH=ffmpeg --env EDITOR_PYTHON_PATH=python3 shorts-diag:local sh -ec '
             test "$(id -u)" -ne 0
