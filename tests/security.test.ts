@@ -66,3 +66,17 @@ test('real HTTP middleware blocks unauthenticated calls before body parsing and 
     assert.equal(paidCalls, 1);
   } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
 });
+
+test('verified tokens must belong to a session within the account cutoff', async () => {
+  const lookup = (validSince: unknown) => async () => reply({users:[{
+    localId:'synthetic-owner', email:'kanata840@gmail.com', emailVerified:true, validSince,
+  }]});
+  const session = (auth_time: unknown) => 'verified-header.' +
+    Buffer.from(JSON.stringify({auth_time, iat:200})).toString('base64url') + '.verified-signature';
+  await assert.rejects(verifyAppUser(session(99), lookup('100')), /AUTH_REQUIRED/);
+  await assert.rejects(verifyAppUser(session(null), lookup('100')), /AUTH_REQUIRED/);
+  await assert.rejects(verifyAppUser(session(101), lookup('invalid')), /AUTH_REQUIRED/);
+  await assert.rejects(verifyAppUser('malformed-but-long-enough', lookup('100')), /AUTH_REQUIRED/);
+  assert.equal((await verifyAppUser(session(100), lookup('100'))).uid, 'synthetic-owner');
+  assert.equal((await verifyAppUser(session(101), lookup('100'))).uid, 'synthetic-owner');
+});
