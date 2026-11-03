@@ -1,4 +1,4 @@
-name: One-time patched Shorts renderer validation
+name: One-time Shorts caption fidelity comparison
 on:
   push:
     branches: ['audit/one-time-os-inventory-20261103']
@@ -11,10 +11,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        release: [wheel, source]
+        release: [source]
     env:
       RELEASE: ${{ matrix.release }}
-      SOURCE_SHA: f1c7bf17cd07b2228458bf4023602a1b016f5697
+      SOURCE_SHA: 0601bfff971c1a19ab1fd57d51a019f10bef5741
     steps:
       - name: Read exact public app source and build local candidate
         run: |
@@ -22,6 +22,9 @@ jobs:
           git -C app fetch --quiet --no-tags --depth=1 https://github.com/kanata-git-hub/orihani-shorts.git "$SOURCE_SHA"
           git -C app checkout --quiet --detach FETCH_HEAD
           test "$(git -C app rev-parse HEAD)" = "$SOURCE_SHA"
+          sed "s|^FROM node:22-trixie-slim|FROM node:22-trixie-slim@sha256:b0ea3309e53992217c31c10aea3ef3ce47c3fffba7416a1e4a5a60b60373b1ed|" app/Dockerfile > "$RUNNER_TEMP/reference.Dockerfile"
+          grep -q "^FROM node:22-trixie-slim@sha256:b0ea3309e53992217c31c10aea3ef3ce47c3fffba7416a1e4a5a60b60373b1ed" "$RUNNER_TEMP/reference.Dockerfile"
+          docker build --platform linux/amd64 --quiet -f "$RUNNER_TEMP/reference.Dockerfile" -t shorts-reference:local app
           python - <<'PY'
           from pathlib import Path
           import os
@@ -41,13 +44,55 @@ jobs:
               if line.startswith("FROM "): lines[i]="FROM "+base
               if line.startswith("RUN apt-get"):
                   runtime=" ffmpeg fontconfig font-noto-cjk python3 tzdata"+("" if binary else " freetype fribidi harfbuzz libraqm libjpeg-turbo zlib")
-                  lines[i]="RUN apk add --no-cache"+runtime+"\nCOPY --from=caption-build /opt/ori-caption /opt/ori-caption\nENV PYTHONPATH=/opt/ori-caption"
+                  lines[i]="RUN apk add --no-cache"+runtime+"\nCOPY --from=caption-build /opt/ori-caption /opt/ori-caption\nRUN python3 -c \"import pathlib,sysconfig; (pathlib.Path(sysconfig.get_path('purelib')) / 'ori-caption.pth').write_text('/opt/ori-caption' + chr(10))\""
           p.write_text("\n".join(build+[""]+lines)+"\n")
           PY
           docker build --platform linux/amd64 --quiet -t shorts-diag:local app
           docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges shorts-diag:local python3 -c "import PIL; from PIL import features; import glob; assert PIL.__version__=='13.0.0'; assert PIL.__file__.startswith('/opt/ori-caption/'); assert not glob.glob('/usr/lib/python*/site-packages/PIL'); print('CAPTION_PIL',PIL.__version__,features.version('freetype2'),features.version('jpg'),features.version('zlib'),features.check('raqm')); print('BUNDLED_NATIVE',sorted(x.rsplit('/',1)[-1] for x in glob.glob('/opt/ori-caption/pillow.libs/*')))"
           docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges shorts-diag:local sh -ec '! apk info -e py3-pillow; ! apk info -e py3-pip; ! apk info -e build-base; apk info -v libxml2 ffmpeg python3'
 
+      - name: Compare exact production caption and editor overlay pixels
+        run: |
+          root="$RUNNER_TEMP/fidelity"
+          mkdir -p "$root"
+          cat > "$root/legacy.cjs" <<'JS'
+          const fs=require('node:fs'), {subtitles}=require('/app/.editor-test/renderer.cjs');
+          fs.writeFileSync('/report/overlay.ass', subtitles({title:'',narration:'',thumbnail:'',captions:[{start:0,end:3,text:'퇴근 전, 어깨가 뻐근해요'}]}));
+          JS
+          for img in reference diag; do
+            mkdir -m 0777 "$root/$img"
+            printf '%s\n' '{"captions":["오래 앉아 있었더니","퇴근 전, 어깨가 뻐근해요"],"brand":true}' > "$root/$img/req.json"
+            docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges --tmpfs /app/.editor-test:rw,exec,mode=1777 --mount type=bind,src="$root/$img",dst=/report --mount type=bind,src="$root/legacy.cjs",dst=/tmp/legacy.cjs,readonly shorts-$img:local sh -ec '
+              test "$(id -u)" -ne 0
+              unset PYTHONPATH
+              python3 -c "import PIL; print(\"PYTHON_ACTUAL\", PIL.__version__,PIL.__file__)"
+              python3 scripts/render-clinic-captions.py /report/req.json /report
+              node_modules/.bin/esbuild server/editor/render.ts --bundle --platform=node --packages=external --format=cjs --outfile=/app/.editor-test/renderer.cjs
+              node /tmp/legacy.cjs
+              ffmpeg -y -hide_banner -loglevel error -f lavfi -i color=black:s=1080x1920 -vf ass=/report/overlay.ass -frames:v 1 -threads 1 /report/legacy.png
+              for exe in "$(command -v ffmpeg)" "$(command -v fc-match)" "$(command -v python3)"; do
+                echo "GIO_DEPENDENCY $exe"; ldd "$exe" | grep -E "libgio-2.0|libglib-2.0" || echo NONE
+              done
+              pdir=$(python3 -c "import pathlib,PIL; print(pathlib.Path(PIL.__file__).parent)")
+              printf "PIL_GIO_LINK "; find "$pdir" -name "*.so" -exec ldd {} \; 2>/dev/null | grep libgio-2.0 | sort -u || true
+            '
+          done
+          cat > "$root/compare.py" <<'PY'
+          from PIL import Image,ImageChops,ImageStat
+          import pathlib,hashlib,json,collections
+          path=pathlib.Path('/report')
+          for name in ('clinic-caption-0.png','clinic-caption-1.png','clinic-brand.png','legacy.png'):
+              a,b=(Image.open(path/v/name).convert('RGBA') for v in ('reference','diag'))
+              assert a.size==b.size==(1080,1920)
+              mask=lambda im:im.convert('L').point(lambda x:255 if x>3 else 0) if name=='legacy.png' else im.getchannel('A').point(lambda x:255 if x else 0)
+              am,bm=mask(a),mask(b)
+              union=ImageChops.lighter(am,bm); single=ImageChops.difference(am,bm)
+              total=union.histogram()[255]; positions=single.histogram()[255]
+              delta=ImageChops.difference(a,b)
+              changed=sum(any(pixel) for pixel in delta.getdata())
+              print('CAPTION_PIXELS',json.dumps(dict(image=name,bbox_before=am.getbbox(),bbox_after=bm.getbbox(),union=total,mask_iou=round((total-positions)/total,6),changed_pixels=changed,changed_percent_union=round(100*changed/total,4),mae8bit_union=[round(x,4) for x in ImageStat.Stat(delta,union).mean],byte_identical=a.tobytes()==b.tobytes(),dominant_before=[x[0] for x in collections.Counter(p for p,k in zip(a.getdata(),am.getdata()) if k).most_common(3)],dominant_after=[x[0] for x in collections.Counter(p for p,k in zip(b.getdata(),bm.getdata()) if k).most_common(3)])))
+          PY
+          docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges --mount type=bind,src="$root",dst=/report,readonly shorts-diag:local python3 /report/compare.py
       - name: Audit OS and retain minimum private evidence
         run: |
           cd "$RUNNER_TEMP"
