@@ -16,6 +16,18 @@ export async function verifyAppUser(token: unknown, request: typeof fetch = fetc
   if (!lookup.ok) throw Error(lookup.status >= 500 || lookup.status === 429 ? 'AUTH_UNAVAILABLE' : 'AUTH_REQUIRED');
   const account = (await lookup.json()).users?.[0];
   if (typeof account?.localId !== 'string' || typeof account.email !== 'string' || account.disabled || account.emailVerified !== true) throw Error('AUTH_REQUIRED');
+  // accounts:lookup already authenticated this token. Firebase's revocation
+  // boundary is compared with the original sign-in time, not the refresh time.
+  if (account.validSince !== undefined) {
+    try {
+      if (typeof account.validSince !== 'string' || !/^\d+$/.test(account.validSince)) throw Error();
+      const cutoff = Number(account.validSince);
+      const parts = token.split('.');
+      if (!Number.isSafeInteger(cutoff) || parts.length !== 3) throw Error();
+      const { auth_time } = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+      if (!Number.isSafeInteger(auth_time) || auth_time < cutoff) throw Error();
+    } catch { throw Error('AUTH_REQUIRED'); }
+  }
   const user = { uid: account.localId, email: account.email };
   if (account.email === OWNER || ACCESS_POLICY === 'signed-in') return user;
   const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };

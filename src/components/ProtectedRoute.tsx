@@ -14,11 +14,11 @@ export const ProtectedRoute: React.FC<{ children: React.ReactNode, requireAdmin?
     return <Navigate to="/login" replace />;
   }
 
-  if (!isApproved && user.email !== 'kanata840@gmail.com') {
+  if (!isApproved) {
     return <Navigate to="/unauthorized" replace />;
   }
 
-  if (requireAdmin && role !== 'admin' && user.email !== 'kanata840@gmail.com') {
+  if (requireAdmin && role !== 'admin') {
     return <Navigate to="/" replace />;
   }
 

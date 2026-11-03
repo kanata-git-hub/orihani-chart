@@ -13,3 +13,8 @@ test('preserves prescription details and styling while stripping active HTML', (
   const unsafe=render('<iframe src="https://attacker.invalid"></iframe><input autofocus onfocus="alert(1)"><a href="javascript:alert(1)">link</a><div onclick="alert(1)"><script>alert(1)</script>safe text</div>');
   assert.doesNotMatch(unsafe, /<iframe|<script|onfocus|onclick|javascript:/);assert.match(unsafe,/safe text/);
 });
+
+test('chart output cannot initiate unsolicited external requests', () => {
+  const html = render('![image](https://example.invalid/marker)\n\n<picture><source srcset="https://example.invalid/marker"><img src="https://example.invalid/marker"></picture>');
+  assert.doesNotMatch(html, /<img|<source|<picture|example\.invalid/);
+});

@@ -52,7 +52,7 @@ async function startServer(withKey) {
     child.once('exit', code => { clearTimeout(timeout); reject(Error('Server exited: '+code+' '+logs)); });
     child.stdout.on('data', value => { if (String(value).includes('Production Server running')) {clearTimeout(timeout);resolve();} });
   });
-  return {url:`http://127.0.0.1:${port}/api/generate-followup`, close:async()=>{child.kill();await once(child,'exit');await rm(dir,{recursive:true,force:true});}};
+  return {url:`http://127.0.0.1:${port}/api/generate-followup`, logs:() => logs, close:async()=>{child.kill();await once(child,'exit');await rm(dir,{recursive:true,force:true});}};
 }
 
 const headers = {'Content-Type':'application/json',Authorization:'Bearer synthetic-token-long-enough'};
@@ -61,6 +61,13 @@ test('real follow-up endpoint keeps authentication, engine metadata and herb pro
   try {
     const unauthorized = await fetch(server.url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:'synthetic',engine:'gpt-astra'})});
     assert.equal(unauthorized.status,401);
+    const marker = 'private-body-test-marker';
+    const invalid = await fetch(server.url, {method:'POST', headers, body: marker});
+    assert.equal(invalid.status,400);
+    assert.doesNotMatch(await invalid.text(), /private-body-test-marker/);
+    assert.doesNotMatch(server.logs(), /private-body-test-marker/);
+    const outside = await fetch(new URL('/static-not-an-api', server.url), {method:'POST', headers, body: marker});
+    assert.equal(outside.status,404);
     for(const engine of ['gemini','gpt-astra',undefined]) {
       const response = await fetch(server.url,{method:'POST',headers,body:JSON.stringify({prompt:'synthetic',engine})});
       assert.equal(response.status,200);
