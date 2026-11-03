@@ -22,3 +22,31 @@ export function scopedStorage(store: Store, uid: string | null) {
     removeItem(key: string) { if (uid) store.removeItem(keyFor(key)); },
   };
 }
+
+type BrowserStore = Store & Pick<Storage, 'length' | 'key'>;
+const SHEET_TOKEN = 'googleAccessToken';
+
+function clearSavedTokens(storage: BrowserStore, keep: string | null = null) {
+  for (let i = storage.length - 1; i >= 0; i--) {
+    const key = storage.key(i);
+    if (key && key !== keep && (key === SHEET_TOKEN || /^orihani:user:.*:googleAccessToken$/.test(key))) {
+      storage.removeItem(key);
+    }
+  }
+}
+
+// Older builds stored this credential alongside patient drafts. Only carry an attributed
+// token into its owner's current tab; leave patient drafts and Firebase sign-in untouched.
+export function restoreSheetToken(disk: BrowserStore, tab: BrowserStore, uid: string | null): string | null {
+  const key = uid ? `orihani:user:${uid}:${SHEET_TOKEN}` : null;
+  try {
+    clearSavedTokens(tab, key);
+    if (!key) return null;
+    const token = tab.getItem(key) ?? disk.getItem(key) ??
+      (disk.getItem(OWNER_KEY) === uid ? disk.getItem(SHEET_TOKEN) : null);
+    if (token) tab.setItem(key, token);
+    return token;
+  } finally {
+    clearSavedTokens(disk);
+  }
+}

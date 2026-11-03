@@ -1,4 +1,4 @@
-import { initializeDraftOwner, scopedStorage } from '../accountStorage';
+import { initializeDraftOwner, scopedStorage, restoreSheetToken } from '../accountStorage';
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { User, onAuthStateChanged, signInWithPopup, signOut, GoogleAuthProvider } from 'firebase/auth';
 import { doc, getDocFromServer, collection, query, where, getDocsFromServer } from 'firebase/firestore';
@@ -44,7 +44,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       try {
         try {
           initializeDraftOwner(localStorage, currentUser?.uid || null);
-          setGoogleAccessToken(scopedStorage(localStorage, currentUser?.uid || null).getItem('googleAccessToken'));
+          setGoogleAccessToken(restoreSheetToken(localStorage, sessionStorage, currentUser?.uid || null));
         } catch { /* Storage may be disabled. */ }
         if (!currentUser?.emailVerified || !currentUser.email) return;
         if (currentUser.email === 'kanata840@gmail.com') {
@@ -71,13 +71,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => { revision++; unsubscribeAuth(); };
   }, []);
 
+  const rememberSheetToken = (uid: string, token: string) => {
+    if (auth.currentUser?.uid !== uid) return null;
+    setGoogleAccessToken(token);
+    try { scopedStorage(sessionStorage, uid).setItem('googleAccessToken', token); } catch { /* Memory still works. */ }
+    return token;
+  };
+
   const login = async () => {
     try {
       const result = await signInWithPopup(auth, googleProvider);
       const credential = GoogleAuthProvider.credentialFromResult(result);
       if (credential?.accessToken) {
-        setGoogleAccessToken(credential.accessToken);
-        scopedStorage(localStorage, result.user.uid).setItem('googleAccessToken', credential.accessToken);
+        rememberSheetToken(result.user.uid, credential.accessToken);
       }
     } catch (err) {
       console.warn('Google sign-in did not complete.');
@@ -89,9 +95,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const result = await signInWithPopup(auth, googleProvider);
       const credential = GoogleAuthProvider.credentialFromResult(result);
       if (credential?.accessToken) {
-        setGoogleAccessToken(credential.accessToken);
-        scopedStorage(localStorage, result.user.uid).setItem('googleAccessToken', credential.accessToken);
-        return credential.accessToken;
+        return rememberSheetToken(result.user.uid, credential.accessToken);
       }
     } catch (err) {
       console.warn('Google sign-in did not complete.');
@@ -101,7 +105,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const logout = async () => {
     setGoogleAccessToken(null);
-    scopedStorage(localStorage, auth.currentUser?.uid || null).removeItem('googleAccessToken');
+    try { scopedStorage(sessionStorage, auth.currentUser?.uid || null).removeItem('googleAccessToken'); } catch { /* Continue signing out. */ }
     await signOut(auth);
   };
 
