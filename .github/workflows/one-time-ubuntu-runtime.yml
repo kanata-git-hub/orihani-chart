@@ -1,84 +1,33 @@
-name: Validate the vendor package manifest
+name: Inspect official release feed boundaries
 on:
   push:
     branches: ['audit/validation-runtime-ubuntu-20261103']
 permissions:
   contents: read
 jobs:
-  vendor:
+  inspect:
     runs-on: ubuntu-latest
-    timeout-minutes: 16
+    timeout-minutes: 5
     steps:
-      - name: Build the matching operating-system inventory
+      - name: Review release metadata and identifiers
         run: |
-          mkdir -p data && cd data
-          cat > Dockerfile <<'DOCKER'
-          FROM ubuntu@sha256:262df65c0ec6bf8d9dcc87454f4330a05fae4b97825f45854af3b136666584c2
-          RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-noto-cjk python3 tzdata libstdc++6 libatomic1 ca-certificates libfreetype6 libjpeg-turbo8 zlib1g && rm -rf /var/lib/apt/lists/*
-          DOCKER
-          docker build --platform linux/amd64 --quiet -t vendor-inventory:local .
-          docker run --rm --network none vendor-inventory:local sh -ec '. /etc/os-release; test "$ID:$VERSION_ID:$VERSION_CODENAME" = "ubuntu:26.10:stonking"; cat /etc/os-release'
-          docker run --rm --network none vendor-inventory:local dpkg-query -W -f='${Package}\t${Version}\n' > packages.tsv
-          docker run --rm --network none vendor-inventory:local dpkg-query -W > manifest
-          python - <<'PY'
-          import hashlib,pathlib,re
-          pairs=[s.split('\t') for s in pathlib.Path('packages.tsv').read_text().splitlines()]
-          rows=sorted(n+'\t'+re.sub(r'^\d+:','',v) for n,v in pairs)
-          digest=hashlib.sha256(('\n'.join(rows)+'\n').encode()).hexdigest()
-          print('INVENTORY',len(rows), digest)
-          assert len(rows)==298 and digest=='445f9e3cda9c2eec8b87bd92e5145ce5bea6c98e511170f01793aebb61c3cef5', 'Inventory differs from the fully exercised runtime'
-          PY
-      - name: Evaluate release-specific Canonical CVE and USN definitions
-        run: |
-          cd data
-          sudo apt-get -qq update
-          sudo apt-get -y -qq install openscap-scanner >/dev/null
-          for kind in cve usn; do
-            curl --fail --silent --show-error --retry 2 --proto '=https' "https://security-metadata.canonical.com/oval/oci.com.ubuntu.stonking.$kind.oval.xml.bz2" -o "$kind.xml.bz2"
-            bzip2 -dc "$kind.xml.bz2" > "$kind.xml"
-            sha256sum "$kind.xml"
-            oscap oval eval --results "$kind-result.xml" "$kind.xml" > "$kind-eval.log"
+          for kind in usn cve; do
+            curl --proto '=https' -fsSL --retry 3 "https://security-metadata.canonical.com/oval/oci.com.ubuntu.stonking.$kind.oval.xml.bz2" | bzip2 -dc > "$kind.xml"
           done
-          mv manifest manifest-real
-          awk -F '\t' 'BEGIN{OFS="\t"}{print $1,"0.0.0"}' manifest-real > manifest
-          oscap oval eval --results control-result.xml usn.xml > control-eval.log
-          mv manifest-real manifest
           python - <<'PY'
           from collections import Counter
-          from pathlib import Path
-          import json,xml.etree.ElementTree as ET
-          local=lambda el: el.tag.rsplit('}',1)[-1]
-          def evaluate(resultFile,feedFile):
-              feed=ET.parse(feedFile).getroot()
-              metadata={d.get('id'):d for d in feed.iter() if local(d)=='definition' and d.get('id')}
-              result=ET.parse(resultFile).getroot()
-              stats=Counter(); found=[]
-              for item in result.iter():
-                  if local(item)!='definition' or not item.get('definition_id'): continue
-                  state=item.get('result'); stats[state]+=1
-                  if state!='true': continue
-                  d=metadata[item.get('definition_id')]
-                  refs=[x.get('ref_id') for x in d.iter() if local(x)=='reference' and x.get('ref_id')]
-                  severity=next((x.text for x in d.iter() if local(x)=='severity'),None)
-                  title=next((x.text for x in d.iter() if local(x)=='title'),None)
-                  found.append({'id':d.get('id'),'class':d.get('class'),'refs':refs,'severity':severity,'title':title})
-              return stats,found,len(metadata)
-          data={}
-          for k in ('usn','cve','control'):
-              stat,found,definitions=evaluate(k+'-result.xml', ('usn' if k=='control' else k)+'.xml')
-              print('VENDOR_COUNT',k,definitions,dict(stat),dict(Counter((x['severity'] or 'none').lower() for x in found)))
-              assert definitions>0 and sum(stat.values())>0 and not stat['error'] and not stat['unknown']
-              data[k]=found
-          assert len(data['control'])>len(data['usn']), 'old-version positive-control must detect additional applicable notices'
-          del data['control']
-          Path('vendor.json').write_text(json.dumps(data))
+          import xml.etree.ElementTree as ET
+          for name in ['usn','cve']:
+              root=ET.parse(name+'.xml').getroot()
+              gen=root.find('{*}generator')
+              definitions=root.find('{*}definitions')
+              def patterns(d,tag):
+                  return Counter(x.text for r in d for x in r.findall('.//{*}'+tag))
+              print('FEED',name,'GEN',[(x.tag,x.text) for x in gen], 'PREFIXES', dict(Counter(x.get('id').rsplit(':',1)[0] for x in definitions)))
+              print('PLATFORMS',patterns(definitions,'platform').most_common(20),'PRODUCTS',patterns(definitions,'product_name').most_common(5))
+              for group in ('class','version'):
+                  print('DEF',group,Counter(x.get(group) for x in definitions))
+              for d in list(definitions)[:2]:
+                  meta = d.find('{*}metadata')
+                  print('SAMPLE', d.get('id'), [(x.tag.rsplit('}',1)[-1], x.text[:100] if x.text else None, x.attrib) for x in meta.iter() if x.tag.rsplit('}',1)[-1] in ('platform','product','reference','title')][:12])
           PY
-          node - <<'NODE'
-          const fs=require('node:fs'), c=require('node:crypto'), z=require('node:zlib');
-          const key=c.randomBytes(32),iv=c.randomBytes(12),cipher=c.createCipheriv('aes-256-gcm',key,iv);
-          const body=Buffer.concat([cipher.update(z.gzipSync(fs.readFileSync('vendor.json'))),cipher.final()]);
-          const pub=c.createPublicKey({key:Buffer.from('MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzxPlyikh2FvZ6WzpDV0yYt6sLgwqkGhGTbQxhWwnkbMK/CKMzKuT4BEthnbfmE4dD67gshc6Lq2VyLPXcBs4f6XdQMwx9YXdj1tLXiLmH1Wfmg32bDvnf6jgdyUQbk33s2Lk5pUTodtFKTbm9Yhht2BK0J3Vjfxf96SrkMiaRguSsqLI5jiqC+hIjGZwjxjGNutyNaZbLuQ1nak1bJb039gnalPut3+Rh1Td63WL9tMAaOliv3fG3dybs/iriRV47dkV5bmfY+yk48FdhjXzSSIEl0grn3+m3ChtmJRRm9Yt3AEQoT9dBGuOs2XD3TmdOqWjDDqQLNdOPX2S8c75lQIDAQAB','base64'),format:'der',type:'spki'});
-          const wrapped=c.publicEncrypt({key:pub,oaepHash:'sha256'},key);
-          const payload=Buffer.concat([wrapped,iv,cipher.getAuthTag(),body]).toString('base64');
-          for(let i=0;i<payload.length;i+=1500)console.log('SEALED_VENDOR '+payload.slice(i,i+1500));
-          NODE
