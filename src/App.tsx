@@ -95,7 +95,7 @@ function MainApp() {
     window.location.reload();
   };
 
-  const isAdmin = role === 'admin' || user?.email === 'kanata840@gmail.com';
+  const isAdmin = role === 'admin';
 
   return (
     <div className="min-h-screen bg-bg-light text-primary p-4 md:p-8">

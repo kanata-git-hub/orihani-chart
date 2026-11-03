@@ -16,9 +16,15 @@ const app = express();
 // AI Studio requires port 3000. Cloud Run provides PORT via env var (usually 8080).
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
-app.use('/api', requireUser);
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.disable('x-powered-by');
+app.use('/api', requireUser, express.json({ limit: '50mb' }), express.urlencoded({ limit: '50mb', extended: true }));
+// Parser errors can contain fragments of a chart, a recording or a Google token.
+const bodyError: express.ErrorRequestHandler = (error, _req, res, next) => {
+  if (!error?.type) return next(error);
+  const status = error.status === 413 ? 413 : error.status === 415 ? 415 : 400;
+  res.status(status).json({ error: '요청 데이터의 크기와 형식을 확인해주세요.' });
+};
+app.use('/api', bodyError);
 
 // API Endpoints
 const executeWithRetry = async (apiCall: () => Promise<any>, maxRetries = 3, baseDelayMs = 5000) => {
@@ -132,14 +138,15 @@ app.post("/api/generate-chart", async (req, res) => {
         }
         return res.json(parsed);
       } catch (err: any) {
-        console.warn(`Model ${model} failed. Trying next...`, err.message);
+        console.warn(`Model ${model} failed. Trying next...`);
         lastError = err;
       }
     }
     throw lastError;
   } catch (error: any) {
-    console.error("Generate chart error:", error);
-    res.status(500).json({ error: error.message });
+    console.error('Chart generation failed.');
+    const quota = error?.status === 429;
+    res.status(quota ? 429 : 502).json({ error: quota ? 'QUOTA_EXCEEDED' : '차트를 생성하지 못했습니다. 잠시 후 다시 시도해주세요.' });
   }
 });
 
@@ -219,7 +226,7 @@ app.post("/api/generate-followup", async (req, res) => {
               try {
                 webhookData = JSON.parse(responseText);
               } catch(e) {
-                console.error("Parse error on webhook response", e);
+                console.warn("Invalid recipe webhook response.");
                 webhookData = { error: "Invalid JSON from webhook" };
               }
               
@@ -302,7 +309,7 @@ app.post("/api/generate-followup", async (req, res) => {
                 
                 text += markdownList;
               } else if (webhookData.error) {
-                text += `\n\n> ⚠️ **구글 스크립트 오류:** ${webhookData.error}`;
+                text += '\n\n> ⚠️ 약재 용량 계산 결과를 확인할 수 없습니다.';
               } else {
                 text += `\n\n> ⚠️ **안내:** 구글 시트에서 해당 처방을 찾을 수 없습니다.`;
               }
@@ -311,7 +318,7 @@ app.post("/api/generate-followup", async (req, res) => {
               text += `\n\n> ⚠️ 약재 용량 계산 서버와 통신할 수 없거나 형식이 올바르지 않습니다. (상태 코드: ${webhookRes.status})`;
             }
           } catch (e) {
-            console.error("Failed to parse JSON or call webhook:", e);
+            console.warn("Recipe calculation failed.");
             text += `\n\n> ⚠️ 내부 서버 오류: 약재 용량을 파싱할 수 없습니다.`;
           }
         }
@@ -335,10 +342,12 @@ app.post("/api/proxy-webhook", async (req, res) => {
       body: JSON.stringify(req.body)
     });
     const responseText = await webhookRes.text();
-    res.status(webhookRes.status).send(responseText);
+    if (!webhookRes.ok) return res.status(502).json({ error: '약재 용량 계산 서버에 연결하지 못했습니다.' });
+    const result = JSON.parse(responseText);
+    res.status(webhookRes.status).json(result);
   } catch (error: any) {
-    console.error("Webhook proxy error:", error);
-    res.status(500).json({ error: error.message });
+    console.warn('Recipe webhook request failed.');
+    res.status(502).json({ error: '약재 용량 계산 결과를 확인할 수 없습니다.' });
   }
 });
 
@@ -398,8 +407,9 @@ app.post("/api/fetch-google-sheet", async (req, res) => {
 
     return res.json({ matches: results });
   } catch (error: any) {
-    console.error('Google Sheets API Error:', error);
-    res.status(500).json({ error: error.message });
+    console.warn('Google Sheets request failed.');
+    const status = error?.response?.status;
+    res.status(status === 401 || status === 403 ? status : 502).json({ error: '구글 시트를 불러오지 못했습니다. 계정 연결 및 권한을 확인해주세요.' });
   }
 });
 
