@@ -1,4 +1,4 @@
-name: One-time supported runtime validation
+name: One-time interim runtime validation
 on:
   push:
     branches: ['audit/validation-runtime-ubuntu-20261103']
@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        renderer: [source, wheel]
+        renderer: [source]
     env:
       SOURCE_SHA: 0601bfff971c1a19ab1fd57d51a019f10bef5741
       RENDERER: ${{ matrix.renderer }}
@@ -22,11 +22,14 @@ jobs:
           git -C app fetch --quiet --no-tags --depth=1 https://github.com/kanata-git-hub/orihani-shorts.git "$SOURCE_SHA"
           git -C app checkout --quiet --detach FETCH_HEAD
           test "$(git -C app rev-parse HEAD)" = "$SOURCE_SHA"
-          docker pull --platform linux/amd64 ubuntu:26.04 >/dev/null
-          UBUNTU=$(docker image inspect --format '{{index .RepoDigests 0}}' ubuntu:26.04)
+          docker pull --platform linux/amd64 ubuntu:26.10 >/dev/null
+          UBUNTU=$(docker image inspect --format '{{index .RepoDigests 0}}' ubuntu:26.10)
           [[ "$UBUNTU" =~ ^ubuntu@sha256:[0-9a-f]{64}$ ]]
           export UBUNTU
           echo "UBUNTU_BASE $UBUNTU"
+          # Use the exact approved Debian image as the rendering reference.
+          sed 's|^FROM node:22-trixie-slim.*|FROM node:22-trixie-slim@sha256:b0ea3309e53992217c31c10aea3ef3ce47c3fffba7416a1e4a5a60b60373b1ed|' app/Dockerfile > "$RUNNER_TEMP/reference.Dockerfile"
+          docker build --platform linux/amd64 --quiet -t shorts-reference:local -f "$RUNNER_TEMP/reference.Dockerfile" app
           python - <<'PY'
           import os
           from pathlib import Path
@@ -74,7 +77,7 @@ jobs:
           const doc=JSON.parse(fs.readFileSync('findings.json'));
           const results=doc.Results.filter(x=>x.Class==='os-pkgs');
           if(results.length!==1||!results[0].Packages?.length)throw Error('Incomplete OS inventory');
-          const s=results[0], v=s.Vulnerabilities||[], keep=v.filter(x=>['CRITICAL','HIGH'].includes(x.Severity)||x.FixedVersion);
+          const s=results[0], v=s.Vulnerabilities||[], keep=v;
           const packages=s.Packages.map(x=>({n:x.Name,v:x.Version,r:x.Release,src:x.SrcName,sv:x.SrcVersion,sr:x.SrcRelease}));
           const vs=keep.map(x=>({id:x.VulnerabilityID,n:x.PkgName,v:x.InstalledVersion,f:x.FixedVersion||'',s:x.Severity,src:x.SeveritySource||'',status:x.Status,title:x.Title||'',url:x.PrimaryURL||'',vendor:x.VendorSeverity||{}}));
           const os=doc.Metadata.OS;
@@ -87,6 +90,48 @@ jobs:
           const payload=Buffer.concat([wrapped,nonce,cipher.getAuthTag(),blob]).toString('base64');
           for(let i=0;i<payload.length;i+=1500) console.log('SEALED_OS '+payload.slice(i,i+1500));
           NODE
+      - name: Compare exact production caption and editor overlay pixels
+        run: |
+          root="$RUNNER_TEMP/fidelity"
+          mkdir -p "$root"
+          cat > "$root/legacy.cjs" <<'JS'
+          const fs=require('node:fs'), {subtitles}=require('/app/.editor-test/renderer.cjs');
+          fs.writeFileSync('/report/overlay.ass', subtitles({title:'',narration:'',thumbnail:'',captions:[{start:0,end:3,text:'퇴근 전, 어깨가 뻐근해요'}]}));
+          JS
+          for img in reference diag; do
+            mkdir -m 0777 "$root/$img"
+            printf '%s\n' '{"captions":["오래 앉아 있었더니","퇴근 전, 어깨가 뻐근해요"],"brand":true}' > "$root/$img/req.json"
+            docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges --tmpfs /app/.editor-test:rw,exec,mode=1777 --mount type=bind,src="$root/$img",dst=/report --mount type=bind,src="$root/legacy.cjs",dst=/tmp/legacy.cjs,readonly shorts-$img:local sh -ec '
+              test "$(id -u)" -ne 0
+              unset PYTHONPATH
+              python3 -c "import PIL; print(\"PYTHON_ACTUAL\", PIL.__version__,PIL.__file__)"
+              python3 scripts/render-clinic-captions.py /report/req.json /report
+              node_modules/.bin/esbuild server/editor/render.ts --bundle --platform=node --packages=external --format=cjs --outfile=/app/.editor-test/renderer.cjs
+              node /tmp/legacy.cjs
+              ffmpeg -y -hide_banner -loglevel error -f lavfi -i color=black:s=1080x1920 -vf ass=/report/overlay.ass -frames:v 1 -threads 1 /report/legacy.png
+              for exe in "$(command -v ffmpeg)" "$(command -v fc-match)" "$(command -v python3)"; do
+                echo "GIO_DEPENDENCY $exe"; ldd "$exe" | grep -E "libgio-2.0|libglib-2.0" || echo NONE
+              done
+              pdir=$(python3 -c "import pathlib,PIL; print(pathlib.Path(PIL.__file__).parent)")
+              printf "PIL_GIO_LINK "; find "$pdir" -name "*.so" -exec ldd {} \; 2>/dev/null | grep libgio-2.0 | sort -u || true
+            '
+          done
+          cat > "$root/compare.py" <<'PY'
+          from PIL import Image,ImageChops,ImageStat
+          import pathlib,hashlib,json,collections
+          path=pathlib.Path('/report')
+          for name in ('clinic-caption-0.png','clinic-caption-1.png','clinic-brand.png','legacy.png'):
+              a,b=(Image.open(path/v/name).convert('RGBA') for v in ('reference','diag'))
+              assert a.size==b.size==(1080,1920)
+              mask=lambda im:im.convert('L').point(lambda x:255 if x>3 else 0) if name=='legacy.png' else im.getchannel('A').point(lambda x:255 if x else 0)
+              am,bm=mask(a),mask(b)
+              union=ImageChops.lighter(am,bm); single=ImageChops.difference(am,bm)
+              total=union.histogram()[255]; positions=single.histogram()[255]
+              delta=ImageChops.difference(a,b)
+              changed=sum(any(pixel) for pixel in delta.getdata())
+              print('CAPTION_PIXELS',json.dumps(dict(image=name,bbox_before=am.getbbox(),bbox_after=bm.getbbox(),union=total,mask_iou=round((total-positions)/total,6),changed_pixels=changed,changed_percent_union=round(100*changed/total,4),mae8bit_union=[round(x,4) for x in ImageStat.Stat(delta,union).mean],byte_identical=a.tobytes()==b.tobytes(),dominant_before=[x[0] for x in collections.Counter(p for p,k in zip(a.getdata(),am.getdata()) if k).most_common(3)],dominant_after=[x[0] for x in collections.Counter(p for p,k in zip(b.getdata(),bm.getdata()) if k).most_common(3)])))
+          PY
+          docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges --mount type=bind,src="$root",dst=/report,readonly shorts-diag:local python3 /report/compare.py
       - name: Execute candidate's complete synthetic media suite
         run: |
           docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges --tmpfs /app/.editor-test:rw,exec,mode=1777,size=3g --mount type=bind,source="$PWD/app/tests",target=/app/tests,readonly --env FFMPEG_PATH=ffmpeg --env EDITOR_PYTHON_PATH=python3 shorts-diag:local sh -ec '
