@@ -46,7 +46,7 @@ jobs:
           test "$(git -C app rev-parse HEAD)" = "$SOURCE_COMMIT"
       - name: Build a local production-equivalent image at the recorded Linux base digest
         run: |
-          sed -E "s|^(FROM node:$BASE_TAG)([[:space:]]|$)|\\1@$BASE_DIGEST\\2|I" app/Dockerfile > "$RUNNER_TEMP/scan.Dockerfile"
+          sed "s|^FROM node:$BASE_TAG|FROM node:$BASE_TAG@$BASE_DIGEST|" app/Dockerfile > "$RUNNER_TEMP/scan.Dockerfile"
           awk -v base="node:$BASE_TAG@$BASE_DIGEST" 'toupper($1)=="FROM" { gsub(/\r/,"",$2); if($2!=base) exit 1; n++ } END { if(!n) exit 1 }' "$RUNNER_TEMP/scan.Dockerfile"
           docker build --platform linux/amd64 --quiet -f "$RUNNER_TEMP/scan.Dockerfile" -t one-time-os-scan:local app
       - name: Install checksum-verified scanner
