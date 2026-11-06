@@ -289,3 +289,130 @@ test('nested combined mismatches, unbalanced groups and unsupported instructions
     assert.throws(() => createPrescriptionRecipe([header, patientRow], ephedraRows, 'chart:901'), /처방 조합/);
   }
 });
+
+test('a fourth formula in 가 uses the same maximum daily amounts as the three formula columns', () => {
+  const catalog: SheetRows = [...herbRows,
+    [3, '테스트처방다', '약재라', 3],
+    [3, '테스트처방다', '약재가', 1],
+    [4, '테스트처방라', '약재가', 7],
+    [4, '테스트처방라', '약재나', 0.1],
+    [4, '테스트처방라', '약재마', 2.5],
+  ];
+  const patientRow = row('101', '테스트환자', '2026-11-06', '가');
+  patientRow[14] = '테스트처방나';
+  patientRow[15] = '테스트처방다';
+  patientRow[16] = '테스트처방라';
+  const result = createPrescriptionRecipe([header, patientRow], catalog, 'chart:101');
+  assert.deepEqual(result.herbs, [
+    { name: '약재가', dailyGrams: 7 }, { name: '약재나', dailyGrams: 0.29 },
+    { name: '약재다', dailyGrams: 1.5 }, { name: '약재라', dailyGrams: 3 },
+    { name: '약재마', dailyGrams: 2.5 },
+  ]);
+  assert.deepEqual(result.patient.formulas, ['테스트처방가', '테스트처방나', '테스트처방다']);
+  assert.equal(result.patient.additions, '테스트처방라');
+  assert.equal(result.herbs.find(herb => herb.name === '약재가')!.dailyGrams * 15, 105);
+});
+
+test('multiple and repeated formulas in 가 merge once with the base prescription', () => {
+  const catalog: SheetRows = [...herbRows, [3, '테스트처방다', '약재라', 3]];
+  const expected = [
+    { name: '약재가', dailyGrams: 4 }, { name: '약재나', dailyGrams: 0.29 },
+    { name: '약재다', dailyGrams: 1.5 }, { name: '약재라', dailyGrams: 3 },
+  ];
+  for (const additions of [
+    '테스트처방나, 테스트처방다, 테스트처방가, 테스트처방나',
+    '테스트처방나; 테스트처방다\n테스트처방가',
+    '테스트처방나 + 테스트처방다 + 테스트처방가',
+    ' 테스트 처방 나 ＋ 테스트처방다 ＋ 테스트처방가 ',
+  ]) {
+    const patientRow = row('101', '테스트환자', '2026-11-06', '가');
+    patientRow[16] = additions;
+    assert.deepEqual(createPrescriptionRecipe([header, patientRow], catalog, 'chart:101').herbs, expected, additions);
+  }
+});
+
+test('all added formulas merge before ordinary additions and removals regardless of entry order', () => {
+  for (const additions of [
+    '약재가 +1g, 테스트처방나, 약재다 +0.5g',
+    '테스트처방나, 약재다 +0.5g, 약재가 +1g',
+    '약재다 0.5g 추가, 약재가 1g 추가, 테스트처방나',
+  ]) {
+    const patientRow = row('101', '테스트환자', '2026-11-06', '가');
+    patientRow[16] = additions;
+    patientRow[17] = '약재나, 약재가 1/2';
+    assert.deepEqual(createPrescriptionRecipe([header, patientRow], herbRows, 'chart:101').herbs, [
+      { name: '약재가', dailyGrams: 2.5 }, { name: '약재다', dailyGrams: 2 },
+    ], additions);
+  }
+  const ambiguous = row('101', '테스트환자', '2026-11-06', '가');
+  ambiguous[16] = '약재다 0.5g, 테스트처방나';
+  assert.throws(() => createPrescriptionRecipe([header, ambiguous], herbRows, 'chart:101'), /추가량인지 최종량인지/);
+});
+
+test('formula-only 가 works without base formula columns, while herb-only or empty records still fail', () => {
+  const patientRow = row('101', '테스트환자', '2026-11-06', '가', '');
+  patientRow[16] = '테스트처방나';
+  const result = createPrescriptionRecipe([header, patientRow], herbRows, 'chart:101');
+  assert.deepEqual(result.herbs, [{ name: '약재가', dailyGrams: 4 }, { name: '약재다', dailyGrams: 1.5 }]);
+  assert.deepEqual(result.patient.formulas, []);
+  for (const additions of ['', '약재가 2g']) {
+    patientRow[16] = additions;
+    assert.throws(() => createPrescriptionRecipe([header, patientRow], herbRows, 'chart:101'), /처방/);
+  }
+});
+
+test('added formulas retain catalog quantity and duplicate-row validation', () => {
+  const patientRow = row('101', '테스트환자', '2026-11-06', '가');
+  patientRow[16] = '테스트처방나';
+  assert.throws(() => createPrescriptionRecipe([header, patientRow], [
+    ...herbRows, [2, '테스트처방나', '약재가', 1],
+  ], 'chart:101'), /중복 등록/);
+  for (const amount of ['', '약 2', 0, -1]) {
+    const catalog = herbRows.map(source => source[1] === '테스트처방나' && source[2] === '약재다'
+      ? [source[0], source[1], source[2], amount] : source);
+    assert.throws(() => createPrescriptionRecipe([header, patientRow], catalog, 'chart:101'), /함량/);
+  }
+  assert.throws(() => createPrescriptionRecipe([header, patientRow], [
+    ...herbRows, [2, '테스트처방나', '', 2],
+  ], 'chart:101'), /약재명이 비어/);
+});
+
+test('unknown added formulas, partial plus groups and undosed herbs never yield a partial recipe', () => {
+  const patientRow = row('101', '테스트환자', '2026-11-06', '가');
+  for (const additions of [
+    '없는처방', '테스트처방나, 없는처방', '테스트처방나 + 없는처방',
+    '테스트처방나 1/2', '테스트처방나, 약재다',
+  ]) {
+    patientRow[16] = additions;
+    assert.throws(() => createPrescriptionRecipe([header, patientRow], herbRows, 'chart:101'), RecipeError, additions);
+  }
+});
+
+test('matching added-formula combination notes calculate once and mismatched notes still fail', () => {
+  const patientRow = row('101', '테스트환자', '2026-11-06', '가');
+  patientRow[16] = '테스트처방나, 약재가 +1g';
+  patientRow[17] = '약재나';
+  patientRow[18] = '테스트처방가 (가: 테스트처방나, 약재가 +1g, 감: 약재나)';
+  const result = createPrescriptionRecipe([header, patientRow], herbRows, 'chart:101');
+  assert.deepEqual(result.herbs, [{ name: '약재가', dailyGrams: 5 }, { name: '약재다', dailyGrams: 1.5 }]);
+  assert.deepEqual(result.patient.formulas, ['테스트처방가']);
+  assert.equal(result.patient.prescription, patientRow[18]);
+  patientRow[18] = '테스트처방가 (가: 테스트처방가, 약재가 +1g, 감: 약재나)';
+  assert.throws(() => createPrescriptionRecipe([header, patientRow], herbRows, 'chart:101'), /처방 조합/);
+});
+
+test('added formula ephedra merges before final pack targets and retains alias duplicate validation', () => {
+  const catalog: SheetRows = [...ephedraRows, [5, '마황추가처방', '마황 고용량', 16]];
+  for (const additions of ['마황(5g), 마황추가처방', '마황추가처방, 마황(5g)']) {
+    const result = createPrescriptionRecipe([header, ephedraPatient(additions)], catalog, 'chart:901');
+    assert.deepEqual(result.herbs.filter(herb => herb.name.startsWith('마황')), [{ name: '마황', dailyGrams: 10 }]);
+  }
+  const removedTarget = createPrescriptionRecipe([
+    header, ephedraPatient('마황추가처방', '마황 고용량(2.5g)', '테스트처방나'),
+  ], catalog, 'chart:901');
+  assert.deepEqual(removedTarget.herbs.filter(herb => herb.name.startsWith('마황')), [{ name: '마황 고용량', dailyGrams: 5 }]);
+  assert.throws(() => createPrescriptionRecipe([
+    header, ephedraPatient('마황추가처방'),
+  ], [...catalog, [5, '마황추가처방', '마황', 2]], 'chart:901'), /중복 등록/);
+});
+

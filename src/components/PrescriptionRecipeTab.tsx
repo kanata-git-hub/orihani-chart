@@ -237,7 +237,7 @@ export const PrescriptionRecipeTab: React.FC = () => {
             {recipe.patient.additions && <p className="mt-2 break-words">가: {recipe.patient.additions}</p>}
             {recipe.patient.removals && <p className="mt-1 break-words">감: {recipe.patient.removals}</p>}
           </div>
-          <p className="mt-3 text-sm leading-6 text-primary/80">약재 탭의 1일 함량을 기준으로, 중복 약재는 가장 많은 용량에 맞춥니다. 기록된 가감이 있으면 적용한 뒤 기간별로 계산합니다.</p>
+          <p className="mt-3 text-sm leading-6 text-primary/80">가 칸에 적은 처방도 함께 합방합니다. 약재 탭의 1일 함량을 기준으로, 중복 약재는 가장 많은 용량에 맞춥니다. 그다음 약재 가감을 적용해 기간별로 계산합니다.</p>
           {recipe.warnings?.map((warning, index) => <p key={index} className="mt-2 border border-amber-300 bg-amber-50 p-3 text-amber-900">{warning}</p>)}
         </div>
 
@@ -284,3 +284,4 @@ export const PrescriptionRecipeTab: React.FC = () => {
     </div>
   );
 };
+

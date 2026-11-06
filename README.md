@@ -52,8 +52,14 @@ Parenthesized `마황(5g)` and `마황 고용량(2.5g)` modifiers in either 가 
 specify the final amount per pack. Two packs per day give 10g/day and 5g/day,
 respectively; this replaces any base ephedra amount before multiplying by days.
 The high-dose label uses the same ephedra ingredient identity to avoid duplicates.
-Other additions use explicit daily grams. An addition without a quantity stops
-calculation; a bare removal excludes the whole herb, while `N/D` retains that ratio.
+Registered formula names in `가` are merged with the three formula columns,
+using the same maximum daily amount per herb. Separate formulas or mixed formula/herb
+entries with commas, semicolons or newlines; a group of formula names may also use `+`.
+All formulas are merged before herb modifiers, regardless of their order in `가`.
+Repeated formulas are merged once. A formula entered only in `가` also works.
+Other additions use explicit daily grams. An unknown formula or herb addition without
+a quantity stops calculation; a bare removal excludes the whole herb, while `N/D`
+retains that ratio.
 Run `npm run test:recipe` for calculation and HTTP regression checks.
 
 Configure `OPENAI_API_KEY` in the runtime environment of each deployed Cloud Run
@@ -65,3 +71,4 @@ Astra uses the Responses API with `store: false`, medium reasoning and a 240-sec
 request timeout. Run `npm run test:followup`, `npm run test:security`,
 `npm run lint`, and `npm run build` to validate changes. Tests use synthetic data
 and mocked external services; they do not verify a live API key or model access.
+
