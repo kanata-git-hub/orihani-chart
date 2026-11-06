@@ -185,3 +185,58 @@ test('an unresolved additional herb still rejects the entire HTTP recipe alongsi
     assert.equal(result.patient, undefined);
   } finally { await server.close(); }
 });
+
+test('recipe HTTP merges live formulas from 가 before herb modifiers without accepting caller overrides', async () => {
+  const additions = '공통약재 +1g, 추가처방';
+  const combined = `기본처방가 + 기본처방나 + 기본처방다 (가: ${additions}, 감: 새약재 1/2)`;
+  const server = await startServer({
+    patientRecord: ['테스트환자', '101', '40', '여', '', '', '2026-11-06', '', '', '', '', '', '테스트증상',
+      '기본처방가', '기본처방나', '기본처방다', additions, '새약재 1/2', combined],
+    herbRows: [
+      ['번호', '처방명', '약재명', '함량'],
+      [1, '기본처방가', '공통약재', 2],
+      [2, '기본처방나', '공통약재', 4],
+      [3, '기본처방다', '별도약재', 3],
+      [4, '추가처방', '공통약재', 7],
+      [4, '추가처방', '새약재', 2.5],
+    ],
+  });
+  try {
+    const response = await server.request('prescription-recipe', {
+      accessToken: 'synthetic-google', patientId: 'chart:101',
+      formulas: ['없는처방'], additions: '공통약재 +999g', removals: '공통약재',
+    });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('Cache-Control'), 'no-store');
+    const result = await response.json();
+    assert.deepEqual(result.herbs, [
+      { name: '공통약재', dailyGrams: 8 }, { name: '별도약재', dailyGrams: 3 },
+      { name: '새약재', dailyGrams: 1.25 },
+    ]);
+    assert.deepEqual(result.patient.formulas, ['기본처방가', '기본처방나', '기본처방다']);
+    assert.equal(result.patient.additions, additions);
+    assert.equal(result.patient.prescription, combined);
+    assert.ok((await server.requests()).every(request => request.method === 'GET' && !request.hasBody));
+  } finally { await server.close(); }
+});
+
+test('an unknown formula alongside a valid added formula rejects the entire HTTP recipe', async () => {
+  const server = await startServer({
+    patientRecord: ['테스트환자', '101', '40', '여', '', '', '2026-11-06', '', '', '', '', '', '테스트증상',
+      '기본처방', '', '', '추가처방, 없는처방', '', '기본처방'],
+    herbRows: [
+      ['번호', '처방명', '약재명', '함량'],
+      [1, '기본처방', '공통약재', 2], [2, '추가처방', '새약재', 3],
+    ],
+  });
+  try {
+    const response = await server.request('prescription-recipe', { accessToken: 'synthetic-google', patientId: 'chart:101' });
+    assert.equal(response.status, 422);
+    assert.equal(response.headers.get('Cache-Control'), 'no-store');
+    const result = await response.json();
+    assert.match(result.error, /없는처방/);
+    assert.equal(result.herbs, undefined);
+    assert.equal(result.patient, undefined);
+  } finally { await server.close(); }
+});
+

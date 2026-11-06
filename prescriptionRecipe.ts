@@ -186,13 +186,31 @@ function ephedraPackTarget(part: string): { name: string; perPackGrams: number; 
 }
 
 export function calculatePrescriptionRecipe(patient: PrescriptionPatient, herbRows: SheetRows): { herbs: { name: string; dailyGrams: number }[]; warnings: string[] } {
-  if (!patient.formulas.length) throw new RecipeError('가장 최근 기록에 처방이 없습니다. 시트에 처방을 입력한 뒤 다시 조회해주세요.');
   const headers = (herbRows[0] || []).map(cleanHeader);
   const formulaIndex = headers.indexOf('처방명');
   const herbIndex = headers.indexOf('약재명');
   const amountIndex = headers.indexOf('함량');
   if ([formulaIndex, herbIndex, amountIndex].some(index => index < 0)) throw new RecipeError('약재 시트의 처방명·약재명·함량 열을 확인해주세요.');
-  const formulaKeys = [...new Set(patient.formulas.map(key))];
+  const modifierParts = (value: string) => value.normalize('NFKC').split(/[,、;\n]/).map(text).filter(Boolean);
+  const knownFormulas = new Set(herbRows.slice(1).map(row => key(row[formulaIndex])).filter(Boolean));
+  const addedFormulas: string[] = [];
+  const herbAdditions: string[] = [];
+  if (!isEmptyModifier(patient.additions)) {
+    const parts = modifierParts(patient.additions);
+    if (!parts.length) throw new RecipeError('가(추가 처방·약재) 표기를 확인해주세요.');
+    for (const part of parts) {
+      // Match the complete catalog name first. Only split '+' when every item
+      // is a registered formula, so herb additions such as '감초 +2g' stay intact.
+      const formulas = knownFormulas.has(key(part)) ? [part] : splitFormulas(part);
+      if (formulas.length && formulas.every(formula => knownFormulas.has(key(formula)))) addedFormulas.push(...formulas);
+      else herbAdditions.push(part);
+    }
+  }
+  // Merge every formula before applying herb modifiers, regardless of their
+  // order in '가'. Keep the original patient fields for display and validation.
+  const formulas = [...patient.formulas, ...addedFormulas];
+  if (!formulas.length) throw new RecipeError('가장 최근 기록에 처방이 없습니다. 시트에 처방을 입력한 뒤 다시 조회해주세요.');
+  const formulaKeys = [...new Set(formulas.map(key))];
   const recipe = new Map<string, { name: string; dailyGrams: number }>();
   const knownHerbs = new Map<string, string>();
   for (const row of herbRows.slice(1)) {
@@ -201,7 +219,7 @@ export function calculatePrescriptionRecipe(patient: PrescriptionPatient, herbRo
   }
   for (const formulaKey of formulaKeys) {
     const formulaRows = herbRows.slice(1).filter(row => key(row[formulaIndex]) === formulaKey);
-    const formulaName = patient.formulas.find(formula => key(formula) === formulaKey)!;
+    const formulaName = formulas.find(formula => key(formula) === formulaKey)!;
     if (!formulaRows.length) throw new RecipeError(`약재 시트에서 '${formulaName}' 처방을 찾지 못했습니다. 처방명이나 비율 표기를 확인해주세요.`);
     const seen = new Set<string>();
     for (const row of formulaRows) {
@@ -234,16 +252,13 @@ export function calculatePrescriptionRecipe(patient: PrescriptionPatient, herbRo
     recipe.set('마황', { name: target.name, dailyGrams: target.dailyGrams });
     warnings.push(`${target.name}: ${target.perPackGrams}g/팩 × 2팩 = ${target.dailyGrams}g/일을 최종량으로 적용했습니다.`);
   };
-  const modifierParts = (value: string) => value.normalize('NFKC').split(/[,、;\n]/).map(text).filter(Boolean);
-  if (!isEmptyModifier(patient.additions)) {
-    const parts = modifierParts(patient.additions);
-    if (!parts.length) throw new RecipeError('가(추가 약재) 표기를 확인해주세요.');
+  if (herbAdditions.length) {
     const seen = new Set<string>();
-    for (const part of parts) {
+    for (const part of herbAdditions) {
       const packTarget = ephedraPackTarget(part);
       if (packTarget) { applyPackTarget(packTarget); continue; }
       const match = part.match(/^([^\d+:：()]+?)\s*[:：]?\s*(\+?)(\d+(?:\.\d+)?)\s*(?:g|그램)?\s*(추가)?$/i);
-      if (!match) throw new RecipeError(`가(추가 약재) '${part}'의 용량이 없거나 표기가 올바르지 않습니다. 일반 약재는 '약재명 2g'(1일량), 팩당 마황은 '마황(5g)'처럼 입력해주세요.`);
+      if (!match) throw new RecipeError(`가(추가 처방·약재) '${part}'의 처방명을 찾지 못했거나 약재 용량이 없거나 표기가 올바르지 않습니다. 등록된 처방명은 그대로, 일반 약재는 '약재명 2g'(1일량), 팩당 마황은 '마황(5g)'처럼 입력해주세요. 여러 처방·약재는 쉼표로 구분해주세요.`);
       const canonicalHerb = herbKey(match[1]);
       claimEphedraDirective(canonicalHerb);
       if (!knownHerbs.has(canonicalHerb)) throw new RecipeError(`가(추가 약재) '${text(match[1])}'를 약재 시트에서 찾지 못했습니다.`);
@@ -306,3 +321,4 @@ export function createPrescriptionRecipe(patientRows: SheetRows, herbRows: Sheet
   const patient = publicPatient(latest, history.length);
   return { patient, ...calculatePrescriptionRecipe(patient, herbRows) };
 }
+
