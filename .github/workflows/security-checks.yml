@@ -16,6 +16,8 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run lint
       - run: npm run test:security
+      - run: npm run test:chart
+      - run: npm run test:comparison
       - run: npm run test:followup
       - run: npm run test:recipe
       - run: npm run build

@@ -1,0 +1,173 @@
+import { createHash } from 'node:crypto';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname, extname, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { createComparisonCases, SYNTHETIC_AUDIO_SCRIPT } from './comparisonCases.ts';
+import type { ComparisonCase, PromptFactories } from './comparisonCases.ts';
+
+export type ComparisonEngine = 'gemini' | 'gpt-astra';
+export type ComparisonClients = Record<ComparisonEngine, (item: ComparisonCase) => Promise<unknown>>;
+export interface ComparisonRun {
+  engine: ComparisonEngine;
+  status: 'completed' | 'failed';
+  durationMs: number;
+  actualModel?: string;
+  audioModel?: string;
+  result?: unknown;
+  error?: { code: string; status?: number };
+}
+export interface ComparedCase {
+  id: string;
+  title: string;
+  kind: ComparisonCase['kind'];
+  synthetic: true;
+  prompt: string;
+  promptSha256: string;
+  reviewPoints: string[];
+  audio?: { mimeType: string; sha256: string; bytes: number };
+  runs: ComparisonRun[];
+}
+
+export const RUBRIC = [
+  ['입력 사실 보존', '부위·좌우·기간·수치·부정 표현·처방 이력의 누락이나 변조가 없는지 비교합니다.'],
+  ['처방 설정 준수', '쯔무라 기반, 최대량 합방, 비위 상태, 가감과 비율, 재고 제약을 실제 후보에 반영하는지 확인합니다.'],
+  ['다음 선택의 구체성', '현재 가장 유망한 전략과 이유, 이전과 달라지는 점, 유지·전환 기준을 제시하는지 비교합니다.'],
+  ['경과 해석', '주 증상과 동반 증상, 확인된 반응과 미검증 가설을 구분하고 근거 없는 과거 실패 반복을 피하는지 확인합니다.'],
+  ['어조와 분량', '기존 경어체·짧은 항목·볼드·제목을 유지하고, 일반론·반복적인 단서가 실질적 제안을 대체하지 않는지 직접 읽고 비교합니다.'],
+  ['출력 계약', '차트 JSON, 정해진 재평가 제목, 본문과 처방 JSON의 순서·가감 일치, 화면 후처리를 확인합니다.'],
+  ['허위 정보와 중요한 금기', '실제로 없는 논문·진료 사실·함량·효능 보장 또는 확인된 알레르기 무시가 없는지 확인합니다.'],
+  ['실행 품질과 음성', '오류율·응답 시간과 음성의 화자·숫자·약재명·부정 표현 보존, 대화 피드백을 확인합니다.'],
+] as const;
+
+const FAILURE_CODES = new Set(['INVALID_ENGINE', 'INVALID_PROMPT', 'INVALID_AUDIO', 'AUDIO_TOO_LARGE', 'UNSUPPORTED_AUDIO', 'UNSUPPORTED_AUDIO_TYPE',
+  'OPENAI_NOT_CONFIGURED', 'GEMINI_NOT_CONFIGURED', 'OPENAI_ACCESS_DENIED', 'ASTRA_UNAVAILABLE', 'QUOTA_EXCEEDED',
+  'ANALYSIS_TIMEOUT', 'OPENAI_CONNECTION_FAILED', 'OPENAI_REQUEST_FAILED', 'INVALID_AI_RESPONSE', 'INCOMPLETE_AI_RESPONSE',
+  'AI_REFUSAL', 'EMPTY_AI_RESPONSE', 'GEMINI_REQUEST_FAILED', 'TRANSCRIPTION_FAILED', 'INVALID_TRANSCRIPTION',
+  'AUDIO_TRANSCRIPTION_FAILED', 'AUDIO_TRANSCRIPTION_EMPTY', 'AUDIO_TRANSCRIPTION_UNAVAILABLE', 'INVALID_AUDIO_TRANSCRIPT', 'REQUEST_CANCELLED', 'CHART_GENERATION_FAILED']);
+
+export const promptHash = (prompt: string) => createHash('sha256').update(prompt, 'utf8').digest('hex');
+export const escapeHtml = (value: unknown) => String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]!));
+
+function safeFailure(error: unknown): ComparisonRun['error'] {
+  const candidate = error as { message?: unknown; status?: unknown } | null;
+  const code = typeof candidate?.message === 'string' && FAILURE_CODES.has(candidate.message) ? candidate.message : 'COMPARISON_REQUEST_FAILED';
+  const status = typeof candidate?.status === 'number' && Number.isInteger(candidate.status) && candidate.status >= 400 && candidate.status <= 599 ? candidate.status : undefined;
+  return { code, ...(status ? { status } : {}) };
+}
+
+/** Serial calls use the exact same frozen prompt/audio values. One failure never hides the other engine's result. */
+export async function compareCases(cases: ComparisonCase[], clients: ComparisonClients): Promise<ComparedCase[]> {
+  const compared: ComparedCase[] = [];
+  for (const source of cases) {
+    if (source.synthetic !== true) throw Error('Only synthetic evaluation cases are accepted.');
+    const audioData = source.audioData ? Object.freeze({ ...source.audioData }) : undefined;
+    const item = Object.freeze({ ...source, audioData, reviewPoints: [...source.reviewPoints] });
+    const entry: ComparedCase = { id: item.id, title: item.title, kind: item.kind, synthetic: true, prompt: item.prompt,
+      promptSha256: promptHash(item.prompt), reviewPoints: [...item.reviewPoints], runs: [] };
+    if (audioData) {
+      const bytes = Buffer.from(audioData.data, 'base64');
+      entry.audio = { mimeType: audioData.mimeType, sha256: createHash('sha256').update(bytes).digest('hex'), bytes: bytes.length };
+    }
+    for (const engine of ['gemini', 'gpt-astra'] as const) {
+      const started = performance.now();
+      try {
+        const result = await clients[engine](item);
+        const meta = result as { engine?: unknown; model?: unknown; audioModel?: unknown } | null;
+        if (meta?.engine !== engine || typeof meta.model !== 'string' || !meta.model.trim()) throw Error('INVALID_AI_RESPONSE');
+        entry.runs.push({ engine, status: 'completed', durationMs: Math.round(performance.now() - started), actualModel: meta.model,
+          ...(typeof meta.audioModel === 'string' ? { audioModel: meta.audioModel } : {}), result });
+      } catch (error) {
+        entry.runs.push({ engine, status: 'failed', durationMs: Math.round(performance.now() - started), error: safeFailure(error) });
+      }
+    }
+    compared.push(entry);
+  }
+  return compared;
+}
+
+export function renderComparisonHtml(cases: ComparedCase[], generatedAt: string): string {
+  const sections = cases.map(item => `<section><h2>${escapeHtml(item.title)}</h2><p><code>${escapeHtml(item.id)}</code> · prompt SHA-256: <code>${escapeHtml(item.promptSha256)}</code></p>
+<ul>${item.reviewPoints.map(point => `<li>${escapeHtml(point)}</li>`).join('')}</ul>
+<div class="columns">${item.runs.map(run => `<article><h3>${escapeHtml(run.engine)}</h3><p>${escapeHtml(run.status)} · ${run.durationMs} ms · ${escapeHtml(run.actualModel ?? '모델 미확인')}${run.audioModel ? ` · 음성: ${escapeHtml(run.audioModel)}` : ''}</p><pre>${escapeHtml(JSON.stringify(run.status === 'completed' ? run.result : run.error, null, 2))}</pre></article>`).join('')}</div>
+<details><summary>동일한 원문 프롬프트</summary><pre>${escapeHtml(item.prompt)}</pre></details></section>`).join('\n');
+  return `<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>오리차트 AI 결과 비교</title>
+<style>body{font:16px/1.6 system-ui,sans-serif;margin:28px;color:#28221d;background:#faf8f3}main{max-width:1600px;margin:auto}h1,h2{line-height:1.3}section{margin:28px 0;padding:24px;background:#fff;border:1px solid #d8d0c5;border-radius:10px}.columns{display:grid;grid-template-columns:1fr 1fr;gap:18px}article{min-width:0;background:#f4f1eb;padding:16px}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.65 ui-monospace,monospace}code{overflow-wrap:anywhere}table{width:100%;border-collapse:collapse}td,th{text-align:left;vertical-align:top;padding:10px;border:1px solid #d8d0c5}.pending{padding:18px;background:#fff0cb;border:1px solid #be9952}@media(max-width:800px){.columns{grid-template-columns:1fr}body{margin:12px}section{padding:14px}}</style>
+<main><h1>오리차트 Gemini / GPT Astra 결과 비교</h1><p>생성: ${escapeHtml(generatedAt)} · 모든 기본 사례는 합성 데이터입니다.</p>
+<p class="pending"><strong>품질 판정: 수동 검토 대기.</strong> 요청 완료나 자동 검사 통과는 의학적 동등성·우월성의 증명이 아닙니다. 원장님의 처방 기준과 기존 어조를 결과별로 직접 비교해야 합니다. 운영 기본값 전환 승인을 자동으로 내리지 않습니다.</p>
+<p>중단 기준: 입력 사실·처방량·연구 결과를 지어냄, 확인된 알레르기 무시, 치료 제한 위반, 본문과 처방 JSON 불일치, 불완전 출력, 음성 내용의 중대한 오인. 한 항목이라도 있으면 전환 판단을 보류합니다.</p>
+<table><thead><tr><th>평가 항목</th><th>수동 확인 기준</th><th>판정</th></tr></thead><tbody>${RUBRIC.map(([name, detail]) => `<tr><td>${escapeHtml(name)}</td><td>${escapeHtml(detail)}</td><td>검토 대기</td></tr>`).join('')}</tbody></table>
+<p>${cases.some(item => item.audio) ? '음성 사례 포함: 내용 보존과 최종 화면 후처리는 별도 수동 확인이 필요합니다.' : '음성 비교 미실시: 텍스트 결과만으로 전체 오리차트 전환을 완료 판정하지 않습니다.'} 출력은 앱 엔진 함수의 JSON 결과이며, UI 및 외부 약재 계산 검증을 대신하지 않습니다. 토큰·비용은 현재 엔진 반환값에 포함되지 않아 여기서 추정하지 않습니다.</p>${sections}</main></html>`;
+}
+
+export async function writeComparison(cases: ComparedCase[], outDir: string): Promise<{ jsonPath: string; htmlPath: string }> {
+  const generatedAt = new Date().toISOString();
+  await mkdir(outDir, { recursive: true });
+  const jsonPath = resolve(outDir, 'comparison.json'), htmlPath = resolve(outDir, 'comparison.html');
+  await writeFile(jsonPath, JSON.stringify({ generatedAt, synthetic: true, reviewStatus: 'pending_manual_review', clinicalEquivalence: 'not_established',
+    audioComparisonIncluded: cases.some(item => item.audio), cases }, null, 2) + '\n');
+  await writeFile(htmlPath, renderComparisonHtml(cases, generatedAt));
+  return { jsonPath, htmlPath };
+}
+
+export async function prepareCases(audioData?: ComparisonCase['audioData']): Promise<ComparisonCase[]> {
+  // tsx resolves the existing application's extensionless/type-only imports without changing its prompt source.
+  const { tsImport } = await import('tsx/esm/api');
+  const prompts = await tsImport('../src/services/prompts.ts', import.meta.url) as PromptFactories;
+  return createComparisonCases(prompts, audioData);
+}
+
+async function main(args: string[]) {
+  const values: Record<string, string> = {}, flags = new Set<string>(), caseIds: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (['--dry-run', '--help', '--confirm-synthetic-audio', '--print-audio-script'].includes(arg)) flags.add(arg);
+    else if (['--out', '--case', '--audio', '--audio-mime'].includes(arg)) {
+      if (!args[i + 1] || args[i + 1].startsWith('--')) throw Error('Missing option value.');
+      if (arg === '--case') caseIds.push(args[++i]); else values[arg] = args[++i];
+    } else throw Error('Unknown option. Use --help.');
+  }
+  if (flags.has('--help')) { console.log('node --experimental-strip-types scripts/compare-ai.ts [--dry-run] [--case ID] [--out DIR] [--audio FILE --confirm-synthetic-audio] [--audio-mime MIME] [--print-audio-script]'); return; }
+  if (flags.has('--print-audio-script')) { console.log(SYNTHETIC_AUDIO_SCRIPT); return; }
+  let audioData: ComparisonCase['audioData'];
+  if (values['--audio']) {
+    if (!flags.has('--confirm-synthetic-audio')) throw Error('Audio must be recorded from the synthetic script. Add --confirm-synthetic-audio only for synthetic audio.');
+    const mimeByExtension: Record<string, string> = { '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.webm': 'audio/webm', '.ogg': 'audio/ogg', '.flac': 'audio/flac' };
+    const mimeType = values['--audio-mime'] || mimeByExtension[extname(values['--audio']).toLowerCase()];
+    const supported = new Set(['audio/wav', 'audio/wave', 'audio/x-wav', 'audio/mpeg', 'audio/mp3', 'audio/mp4', 'audio/m4a', 'audio/x-m4a', 'audio/webm', 'audio/ogg', 'audio/flac', 'audio/x-flac']);
+    if (!mimeType || !supported.has(mimeType.toLowerCase())) throw Error('Audio MIME type is missing or unsupported by the comparison route.');
+    const bytes = await readFile(resolve(values['--audio']));
+    if (!bytes.length || bytes.length > 25_000_000) throw Error('Synthetic audio must be non-empty and at most 25,000,000 bytes.');
+    audioData = { mimeType, data: bytes.toString('base64') };
+  } else if (values['--audio-mime'] || flags.has('--confirm-synthetic-audio')) throw Error('--audio is required for audio options.');
+  let cases = await prepareCases(audioData);
+  if (caseIds.length) {
+    if (caseIds.some(id => !cases.some(item => item.id === id))) throw Error('Unknown or unavailable case ID.');
+    cases = cases.filter(item => caseIds.includes(item.id));
+  }
+  if (flags.has('--dry-run')) {
+    console.log(JSON.stringify({ mode: 'dry-run', paidCalls: 0, synthetic: true, audioComparisonIncluded: cases.some(item => item.audioData),
+      cases: cases.map(({ id, kind, title, prompt }) => ({ id, kind, title, promptSha256: promptHash(prompt), promptCharacters: prompt.length })) }, null, 2));
+    return;
+  }
+  if (!process.env.OPENAI_API_KEY?.trim() || !process.env.GEMINI_API_KEY?.trim()) throw Error('Both OPENAI_API_KEY and GEMINI_API_KEY must be configured in the process environment. No request was sent.');
+  const [{ generateChartResponse }, { generateFollowUpResponse }] = await Promise.all([import('../chartEngine.ts'), import('../followUpEngine.ts')]);
+  const client = (engine: ComparisonEngine) => (item: ComparisonCase) => item.kind === 'chart'
+    ? generateChartResponse(item.prompt, item.audioData, engine)
+    : generateFollowUpResponse(item.prompt, engine);
+  const compared = await compareCases(cases, { gemini: client('gemini'), 'gpt-astra': client('gpt-astra') });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  const files = await writeComparison(compared, resolve(values['--out'] || resolve(repo, 'generated/ai-comparison', stamp)));
+  const failed = compared.reduce((sum, item) => sum + item.runs.filter(run => run.status === 'failed').length, 0);
+  console.log(JSON.stringify({ ...files, cases: compared.length, failedCalls: failed, reviewStatus: 'pending_manual_review', clinicalEquivalence: 'not_established' }, null, 2));
+  if (failed) process.exitCode = 1;
+}
+
+if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+  main(process.argv.slice(2)).catch(error => {
+    // Only locally produced setup errors are readable; arbitrary request errors are masked inside compareCases.
+    const allowed = /^(Missing option value|Unknown option|Audio must be recorded|Audio MIME type|Synthetic audio must|--audio is required|Unknown or unavailable case|Both OPENAI_API_KEY)/;
+    console.error(allowed.test(error?.message || '') ? error.message : 'Comparison setup failed. Check dependencies, synthetic input file and output directory. No secret details are logged.');
+    process.exitCode = 1;
+  });
+}

@@ -39,6 +39,7 @@ function MainApp() {
     patientData,
     isSaved,
     updateBriefingField,
+    updateEngine,
     updateResult,
     resetTab,
     resetAllTabs
@@ -63,17 +64,35 @@ function MainApp() {
   const currentPatient = patientData[activeTab] || { briefing: { ...initialBriefing }, result: null };
   const briefing = currentPatient.briefing;
   const result = currentPatient.result;
+  const selectedEngine = currentPatient.selectedEngine === 'gpt-astra' ? 'gpt-astra' : 'gemini';
 
   const handleGenerateChart = async (audioData?: { mimeType: string, data: string }) => {
     setIsLoading(true);
     setError(null);
     try {
-      const parsedResult = await generateAIChart(briefing, audioData);
+      const parsedResult = await generateAIChart(briefing, audioData, selectedEngine);
       updateResult(activeTab, parsedResult);
     } catch (err) {
       console.error(err);
       const errorMessage = err instanceof Error ? err.message : '차트 생성 중 오류가 발생했습니다.';
-      setError(`차트 생성 실패: ${errorMessage}`);
+      const messages: Record<string, string> = {
+        OPENAI_NOT_CONFIGURED: '서버에 OpenAI API 키가 연결되지 않았습니다.',
+        OPENAI_ACCESS_DENIED: 'OpenAI API 키 또는 모델 사용 권한을 확인해주세요.',
+        ASTRA_UNAVAILABLE: '현재 계정에서 GPT Astra 모델을 사용할 수 없습니다.',
+        QUOTA_EXCEEDED: 'API 사용 한도를 초과했습니다. 크레딧과 호출 한도를 확인해주세요.',
+        ANALYSIS_TIMEOUT: '분석 시간이 초과되었습니다. 다시 시도해주세요.',
+        INCOMPLETE_AI_RESPONSE: '차트가 끝까지 생성되지 않았습니다. 다시 실행해주세요.',
+        INVALID_AI_RESPONSE: '차트 응답 형식을 확인할 수 없습니다.',
+        AI_REFUSAL: '선택한 AI가 이 요청의 분석을 제공하지 않았습니다.',
+        AUDIO_TOO_LARGE: 'GPT Astra의 음성 첨부는 25MB 이하 파일을 지원합니다.',
+        UNSUPPORTED_AUDIO_TYPE: '지원되는 음성 형식으로 다시 첨부해주세요.',
+        INVALID_AUDIO: '음성 파일을 확인하고 다시 첨부해주세요.',
+        INVALID_AUDIO_TRANSCRIPT: '음성 전사 결과를 확인하지 못했습니다. 파일을 확인해주세요.',
+        AUDIO_TRANSCRIPTION_UNAVAILABLE: '현재 OpenAI 계정에서 음성 전사 모델을 사용할 수 없습니다.',
+        OPENAI_CONNECTION_FAILED: 'OpenAI 연결에 실패했습니다. 잠시 후 다시 시도해주세요.',
+        AUDIO_TRANSCRIPTION_FAILED: '음성 전사에 실패했습니다. 파일을 확인하고 다시 시도해주세요.',
+      };
+      setError(`차트 생성 실패: ${messages[errorMessage] || errorMessage}`);
     } finally {
       setIsLoading(false);
     }
@@ -189,6 +208,8 @@ function MainApp() {
                 onFieldChange={(name, value) => updateBriefingField(activeTab, name, value)}
                 onResetClick={() => setIsResetModalOpen(true)}
                 onGenerateClick={handleGenerateChart}
+                selectedEngine={selectedEngine}
+                onEngineChange={engine => updateEngine(activeTab, engine)}
               />
 
 

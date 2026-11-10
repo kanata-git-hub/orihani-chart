@@ -19,6 +19,34 @@ View your app in AI Studio: https://ai.studio/apps/b2c282bc-7bca-4b2d-91b0-5a1e4
 3. Run the app:
    `npm run dev`
 
+## OpenAI migration: first app, comparison stage
+
+Initial chart generation now has the same **Gemini / GPT Astra** choice as
+prescription re-evaluation. The choice is saved per patient draft; each new
+result identifies the actual engine/model. Existing drafts and requests still
+default to Gemini while quality comparison is pending. No engine silently falls
+back to the other provider. Failed requests preserve the previous chart.
+
+Both providers use the unchanged prompt factories in `src/services/prompts.ts`.
+Astra uses `gpt-6-astra` with medium reasoning and strict JSON output; the existing
+herb-calculation flow receives the same recipe fields. Uploaded consultations use
+`gpt-transcribe` followed by Astra; Gemini still receives the original recording.
+The OpenAI audio path accepts up to 25,000,000 bytes and reports unsupported files
+or failed transcriptions instead of generating a chart without the recording.
+This change in audio interpretation needs a separate recorded-dialogue comparison.
+
+Use the existing server-only `OPENAI_API_KEY` in the **orihani-chart** Cloud Run
+service. This app does not use the guide/translate service's `OPENAI_API_KEY1`.
+Keep the Gemini key for baseline comparisons. No API keys are exposed to Vite.
+
+Validation: `npm run test:chart`, `npm run test:comparison`, the existing test
+commands below, `npm run lint`, and `npm run build`.
+`npm run compare:ai -- --dry-run` checks seven synthetic cases without paid calls.
+See [AI comparison procedure](docs/ai-comparison.md) for real provider comparisons
+and the audio fixture. Mocked checks establish wiring and error handling only.
+Live quality, tone, latency, account/model access, and credit charging remain to
+be checked before changing the production default or moving to the next app.
+
 ## Prescription re-evaluation engines
 
 The re-evaluation room defaults to Gemini and also offers GPT Astra (`gpt-6-astra`).
