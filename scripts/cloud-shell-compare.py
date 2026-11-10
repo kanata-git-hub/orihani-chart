@@ -9,6 +9,7 @@ never printed or written to a key file, and passed only to the comparison child.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import re
@@ -24,11 +25,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 REPOSITORY = "https://github.com/kanata-git-hub/orihani-chart.git"
-PINNED_COMMIT = "a172bae0f8a21fea09e00d181ec27ad041799178"
+PINNED_COMMIT = "87dae4f47f6ba551bb02b4d0df4cb7bd86962b34"
 SERVICE = "orihani-chart"
 KEY_NAMES = ("OPENAI_API_KEY", "GEMINI_API_KEY")
 IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 REGION = re.compile(r"[a-z]+-[a-z0-9-]+[0-9]\Z")
+CASE_LABELS = {
+    "chart-mild-pain": "초진 통증", "chart-traffic-injury": "초진 교통사고",
+    "chart-digestion": "초진 소화기", "followup-improving": "재평가 호전",
+    "followup-plateau": "재평가 정체", "followup-modifiers": "재평가 가감",
+    "followup-constraints": "재평가 제약",
+}
 
 
 class SetupError(Exception):
@@ -195,21 +202,70 @@ def stop_child(child: subprocess.Popen) -> None:
         pass
 
 
-def run_comparison(repo: Path, output: Path, keys: dict[str, str]) -> int:
+def emit_progress(data: bytes, offset: int) -> int:
+    """Render only known progress fields; never forward raw child output."""
+    end = data.rfind(b"\n") + 1
+    for raw in data[offset:end].splitlines():
+        if not raw.startswith(b"ORI_PROGRESS "):
+            continue
+        try:
+            event = json.loads(raw[len(b"ORI_PROGRESS "):])
+            case_id, engine, status = event.get("caseId"), event.get("engine"), event.get("status")
+            index, total = event.get("index"), event.get("total")
+            engines = {"gemini": "Gemini", "gpt-astra": "OpenAI"}
+            statuses = {"started": "요청 중", "completed": "완료·저장됨", "failed": "실패·저장됨", "reused": "저장된 결과 사용"}
+            if (case_id not in CASE_LABELS or engine not in engines or status not in statuses
+                    or type(index) is not int or type(total) is not int or total != 14):
+                continue
+            expected = list(CASE_LABELS).index(case_id) * 2 + list(engines).index(engine) + 1
+            if index != expected:
+                continue
+            print(f"[{index}/{total}] {CASE_LABELS[case_id]} · {engines[engine]}: {statuses[status]}", flush=True)
+        except (ValueError, TypeError, AttributeError):
+            continue
+    return max(offset, end)
+
+
+def persistent_output(project: str, region: str) -> Path:
+    if not valid_identifier(project) or not REGION.fullmatch(region):
+        raise SetupError("결과 저장 위치를 확인하지 못했습니다.")
+    current = Path.home()
+    for part in ("orihani-ai-comparison", project, region, PINNED_COMMIT):
+        current = current / part
+        if current.is_symlink():
+            raise SetupError("결과 저장 위치가 심볼릭 링크여서 중단했습니다.")
+        current.mkdir(mode=0o700, exist_ok=True)
+        if not current.is_dir():
+            raise SetupError("결과 저장 위치를 확인하지 못했습니다.")
+        current.chmod(0o700)
+    for name in ("comparison.json", "comparison.html", ".lock"):
+        if (current / name).is_symlink():
+            raise SetupError("결과 파일 경로가 심볼릭 링크여서 중단했습니다.")
+    return current
+
+
+def run_comparison(repo: Path, output: Path, keys: dict[str, str], *, lock_fd: int | None = None) -> int:
     child_env = clean_environment()
     child_env.update(keys)
+    child_env["ORI_COMPARISON_COMMIT"] = PINNED_COMMIT
     child = None
     try:
-        child = subprocess.Popen(["node", "--experimental-strip-types", "scripts/compare-ai.ts", "--out", str(output)],
+        child = subprocess.Popen(["node", "--experimental-strip-types", "scripts/compare-ai.ts", "--out", str(output), "--resume"],
                                  cwd=repo, env=child_env, stdout=subprocess.PIPE,
-                                 stderr=subprocess.PIPE, start_new_session=True)
+                                 stderr=subprocess.PIPE, start_new_session=True,
+                                 pass_fds=() if lock_fd is None else (lock_fd,))
         started = time.monotonic()
+        offset = 0
         while True:
             try:
-                child.communicate(timeout=20)
+                stdout, _ = child.communicate(timeout=20)
+                emit_progress(stdout or b"", offset)
                 return child.returncode
-            except subprocess.TimeoutExpired:
-                print("비교 진행 중입니다. 동일한 합성 사례를 Gemini와 OpenAI에 차례로 요청하고 있습니다.", flush=True)
+            except subprocess.TimeoutExpired as error:
+                previous = offset
+                offset = emit_progress(error.output or b"", offset)
+                if offset == previous:
+                    print("현재 요청의 응답을 기다리고 있습니다. 완료된 요청은 자동 저장됩니다.", flush=True)
                 if time.monotonic() - started > 5400:
                     raise SetupError("비교 실행이 제한 시간을 넘었습니다. API 상태와 할당량을 확인해주세요.")
     except OSError:
@@ -287,7 +343,7 @@ def main(argv: list[str] | None = None) -> int:
         del service
     with tempfile.TemporaryDirectory(prefix="orihani-compare-") as temporary:
         base = Path(temporary)
-        repo, output = base / "repo", base / "results"
+        repo = base / "repo"
         print("[2/5] 검증 대상 코드를 고정 커밋으로 준비합니다.", flush=True)
         captured(["git", "clone", "--quiet", "--no-checkout", "--filter=blob:none", REPOSITORY, str(repo)], timeout=300, error="비교 코드를 내려받지 못했습니다.")
         captured(["git", "fetch", "--quiet", "--depth", "1", "origin", PINNED_COMMIT], cwd=repo, timeout=300, error="지정한 코드 버전을 가져오지 못했습니다.")
@@ -300,15 +356,29 @@ def main(argv: list[str] | None = None) -> int:
         if options.dry_run:
             print("준비 점검 완료. Cloud Run·보안 비밀·모델 API에 접근하지 않았습니다.", flush=True)
             return 0
+        output = persistent_output(project, region)
+        print(f"중간 결과 저장 위치: {output}", flush=True)
         print("[4/5] 등록된 키를 메모리에서만 읽고 합성 사례 7개를 비교합니다. 앱 배포나 설정 변경은 없습니다.", flush=True)
-        keys = resolve_keys(sources)
-        sources.clear()
-        try:
-            returncode = run_comparison(repo, output, keys)
-            print("[5/5] 비교 보고서를 압축합니다.", flush=True)
-            archive, count, failures = archive_results(output, keys)
-        finally:
-            keys.clear()
+        descriptor = os.open(output / ".lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "w") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise SetupError("같은 비교가 다른 터미널에서 진행 중입니다. 기존 실행이 끝난 뒤 다시 실행해주세요.") from None
+            keys = resolve_keys(sources)
+            sources.clear()
+            try:
+                try:
+                    returncode = run_comparison(repo, output, keys, lock_fd=lock.fileno())
+                except KeyboardInterrupt:
+                    print("중단했습니다. 저장된 결과는 유지됩니다. 같은 명령을 다시 실행하면 완료된 요청을 건너뜁니다.", flush=True)
+                    return 130
+                if returncode not in (0, 1):
+                    raise SetupError("비교 프로그램이 중단되었습니다. 중간 결과는 유지됩니다. 같은 명령으로 다시 실행할 수 있습니다.")
+                print("[5/5] 비교 보고서를 압축합니다.", flush=True)
+                archive, count, failures = archive_results(output, keys)
+            finally:
+                keys.clear()
         print(f"완료: 합성 사례 {count}개, 실패한 API 요청 {failures}개. 품질 판정은 결과 검토 후 진행합니다.", flush=True)
         print(f"결과 파일: {archive}", flush=True)
         print("다운로드 명령: " + shlex.join(["cloudshell", "download", str(archive)]), flush=True)

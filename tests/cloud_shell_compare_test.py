@@ -94,18 +94,86 @@ class CloudShellCompareTests(unittest.TestCase):
         child.poll.return_value = 0
         observed = {}
         def launch(command, **kwargs):
-            observed.update(command=command, env=dict(kwargs["env"]), stdout=kwargs["stdout"], stderr=kwargs["stderr"])
+            observed.update(command=command, env=dict(kwargs["env"]), stdout=kwargs["stdout"], stderr=kwargs["stderr"], pass_fds=kwargs["pass_fds"])
             return child
         output = io.StringIO()
         keys = {"OPENAI_API_KEY": "FAKE-OPENAI", "GEMINI_API_KEY": "FAKE-GEMINI"}
         with patch.object(runner.subprocess, "Popen", side_effect=launch), contextlib.redirect_stdout(output):
-            self.assertEqual(runner.run_comparison(Path("/repo"), Path("/result"), keys), 0)
+            self.assertEqual(runner.run_comparison(Path("/repo"), Path("/result"), keys, lock_fd=123), 0)
         self.assertEqual(observed["command"][:3], ["node", "--experimental-strip-types", "scripts/compare-ai.ts"])
         self.assertEqual(observed["env"]["OPENAI_API_KEY"], "FAKE-OPENAI")
+        self.assertEqual(observed["env"]["ORI_COMPARISON_COMMIT"], runner.PINNED_COMMIT)
+        self.assertIn("--resume", observed["command"])
+        self.assertEqual(observed["pass_fds"], (123,))
         self.assertNotIn("FAKE-OPENAI", " ".join(observed["command"]))
         self.assertEqual(observed["stdout"], subprocess.PIPE)
         self.assertEqual(observed["stderr"], subprocess.PIPE)
         self.assertNotIn("SHOULD-NOT-PRINT", output.getvalue())
+
+    def test_progress_reconstructs_only_known_events_and_hides_raw_output(self):
+        event = {"index": 1, "total": 14, "caseId": "chart-mild-pain", "engine": "gemini", "status": "completed"}
+        data = b"raw SECRET must not appear\nORI_PROGRESS " + json.dumps(event).encode() + b"\nORI_PROGRESS {\"caseId\":\"SECRET\"}\n"
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            offset = runner.emit_progress(data, 0)
+            runner.emit_progress(data + b"incomplete", offset)
+        self.assertEqual(output.getvalue().count("[1/14]"), 1)
+        self.assertIn("완료·저장됨", output.getvalue())
+        self.assertNotIn("SECRET", output.getvalue())
+
+    def test_persistent_output_is_private_and_rejects_symlink(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(runner.Path, "home", return_value=Path(temporary)):
+            output = runner.persistent_output("fixture-project", "asia-northeast3")
+            self.assertTrue(output.is_relative_to(Path(temporary)))
+            self.assertEqual(output.stat().st_mode & 0o777, 0o700)
+            (output / "comparison.json").symlink_to(Path(temporary) / "somewhere")
+            with self.assertRaises(runner.SetupError):
+                runner.persistent_output("fixture-project", "asia-northeast3")
+
+    def test_ctrl_c_preserves_checkpoint_outside_temporary_checkout(self):
+        described = plain_service()
+        def capture(command, **kwargs):
+            if command[:2] == ["node", "--version"]:
+                return "v22.16.0"
+            if command[:4] == ["gcloud", "config", "get-value", "project"]:
+                return "fixture-project"
+            if command[:4] == ["gcloud", "run", "services", "list"]:
+                return json.dumps([{"metadata": {"name": "orihani-chart", "labels": {"cloud.googleapis.com/location": "asia-northeast3"}}}])
+            if command[:4] == ["gcloud", "run", "services", "describe"]:
+                return json.dumps(described)
+            if command == ["git", "rev-parse", "HEAD"]:
+                return runner.PINNED_COMMIT
+            return ""
+        def interrupted(repo, output, keys, *, lock_fd=None):
+            self.assertIsInstance(lock_fd, int)
+            (output / "comparison.json").write_text('{"saved":true}')
+            raise KeyboardInterrupt()
+        with tempfile.TemporaryDirectory() as temporary, patch.object(runner.Path, "home", return_value=Path(temporary)), \
+                patch.object(runner.shutil, "which", return_value="/fake/tool"), \
+                patch.object(runner, "captured", side_effect=capture), \
+                patch.object(runner, "run_comparison", side_effect=interrupted), contextlib.redirect_stdout(io.StringIO()) as stdout:
+            self.assertEqual(runner.main([]), 130)
+            output = runner.persistent_output("fixture-project", "asia-northeast3")
+            self.assertEqual((output / "comparison.json").read_text(), '{"saved":true}')
+            self.assertIn("저장된 결과는 유지", stdout.getvalue())
+            self.assertFalse(list(Path(temporary).glob("*.zip")))
+
+    def test_node_inherits_lock_even_if_parent_handle_closes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / ".lock"
+            with path.open("w") as lock:
+                runner.fcntl.flock(lock, runner.fcntl.LOCK_EX | runner.fcntl.LOCK_NB)
+                child = subprocess.Popen(["node", "-e", "console.log('ready'); setTimeout(() => {}, 10000)"],
+                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                         pass_fds=(lock.fileno(),))
+                self.assertEqual(child.stdout.readline().strip(), "ready")
+            try:
+                with path.open("w") as next_owner:
+                    with self.assertRaises(BlockingIOError):
+                        runner.fcntl.flock(next_owner, runner.fcntl.LOCK_EX | runner.fcntl.LOCK_NB)
+            finally:
+                child.terminate()
+                child.communicate(timeout=5)
 
     def test_zip_contains_only_reports_and_rejects_key_leakage(self):
         with tempfile.TemporaryDirectory() as temporary:
