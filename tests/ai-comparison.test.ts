@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { compareCases, prepareCases, promptHash, renderComparisonHtml, writeComparison } from '../scripts/compare-ai.ts';
+import { compareCases, prepareCases, promptHash, readComparisonCheckpoint, renderComparisonHtml, writeComparison } from '../scripts/compare-ai.ts';
 import type { ComparisonCase } from '../scripts/comparisonCases.ts';
 
 const sample: ComparisonCase = { id: 'synthetic', kind: 'chart', title: '합성 <script>bad()</script>', synthetic: true,
@@ -98,7 +98,156 @@ test('CLI dry run works without credentials and live mode refuses missing creden
   assert.equal(manifest.cases.length, 1);
   assert.equal(manifest.cases[0].id, 'followup-plateau');
   const live = spawnSync(process.execPath, ['--experimental-strip-types', cli, '--case', 'followup-plateau'], { env, encoding: 'utf8' });
-  assert.equal(live.status, 1);
+  assert.equal(live.status, 2);
   assert.match(live.stderr, /No request was sent/);
   assert.doesNotMatch(live.stderr, /\n\s+at /);
+});
+
+const fakeClients = {
+  gemini: async () => ({ engine: 'gemini', model: 'gemini-actual', chartContent: '기존 결과' }),
+  'gpt-astra': async () => ({ engine: 'gpt-astra', model: 'astra-actual', chartContent: '새 결과' }),
+};
+
+test('every settled request is saved before progress and an interrupted run resumes without repeating completed calls', async () => {
+  const out = await mkdtemp(join(tmpdir(), 'ori-resume-'));
+  const events: string[] = [];
+  try {
+    let checkpoints = 0;
+    await assert.rejects(compareCases([sample], fakeClients, {
+      onProgress: event => { events.push(`${event.engine}:${event.status}`); },
+      onCheckpoint: async entries => {
+        await writeComparison(entries, out);
+        checkpoints++;
+        if (checkpoints === 1) throw Error('simulated interruption after persisted response');
+      },
+    }), /simulated interruption/);
+    assert.deepEqual(events, ['gemini:started']);
+    const resume = await readComparisonCheckpoint(out);
+    assert.equal(resume[0].runs.length, 1);
+    assert.equal(resume[0].runs[0].status, 'completed');
+    let geminiCalls = 0, astraCalls = 0;
+    const result = await compareCases([sample], {
+      gemini: async () => { geminiCalls++; return fakeClients.gemini(); },
+      'gpt-astra': async () => { astraCalls++; return fakeClients['gpt-astra'](); },
+    }, { resume, onCheckpoint: async entries => { await writeComparison(entries, out); events.push('saved'); },
+      onProgress: event => { events.push(`${event.engine}:${event.status}`); } });
+    assert.equal(geminiCalls, 0);
+    assert.equal(astraCalls, 1);
+    assert.deepEqual(events.slice(1), ['saved', 'gemini:reused', 'gpt-astra:started', 'saved', 'gpt-astra:completed']);
+    assert.equal(result[0].runs.length, 2);
+    assert.deepEqual((await readdir(out)).sort(), ['comparison.html', 'comparison.json']);
+  } finally { await rm(out, { recursive: true, force: true }); }
+});
+
+test('failed requests retry while independently completed later results are retained in all checkpoints', async () => {
+  const initial = await compareCases([sample], { ...fakeClients, gemini: async () => { throw Error('QUOTA_EXCEEDED'); } });
+  let calls = 0;
+  const snapshots: any[] = [];
+  const result = await compareCases([sample], {
+    gemini: async () => { calls++; return fakeClients.gemini(); },
+    'gpt-astra': async () => { throw Error('completed Astra must not rerun'); },
+  }, { resume: initial, onCheckpoint: entries => { snapshots.push(entries); } });
+  assert.equal(calls, 1);
+  assert.ok(result[0].runs.every(run => run.status === 'completed'));
+  assert.ok(snapshots.every(entries => entries[0].runs[1].status === 'completed'));
+});
+
+test('resume rejects changed input identity, non-synthetic results, reversed engines and mismatched model metadata', async () => {
+  const initial = await compareCases([sample], fakeClients);
+  const corruptions = [
+    (entry: any) => { entry.id = 'different'; },
+    (entry: any) => { entry.kind = 'followup'; },
+    (entry: any) => { entry.synthetic = false; },
+    (entry: any) => { entry.prompt += ' changed'; },
+    (entry: any) => { entry.promptSha256 = 'incorrect'; },
+    (entry: any) => { entry.audio = { mimeType: 'audio/wav', bytes: 1, sha256: 'x' }; },
+    (entry: any) => { entry.runs.reverse(); },
+  ];
+  for (const corrupt of corruptions) {
+    const resume = structuredClone(initial); corrupt(resume[0]);
+    let calls = 0;
+    await assert.rejects(compareCases([sample], {
+      gemini: async () => { calls++; return fakeClients.gemini(); },
+      'gpt-astra': async () => { calls++; return fakeClients['gpt-astra'](); },
+    }, { resume }), /Invalid comparison checkpoint/);
+    assert.equal(calls, 0);
+  }
+  const modelMismatch = structuredClone(initial);
+  modelMismatch[0].runs[0].actualModel = 'wrong-model';
+  let calls = 0;
+  await assert.rejects(compareCases([sample], {
+    gemini: async () => { calls++; return fakeClients.gemini(); },
+    'gpt-astra': async () => { throw Error('valid result should be reused'); },
+  }, { resume: modelMismatch }), /Invalid comparison checkpoint/);
+  assert.equal(calls, 0);
+});
+
+test('audio resume requires the same audio bytes, MIME and size', async () => {
+  const item = { ...sample, audioData: { mimeType: 'audio/wav', data: Buffer.from('audio A').toString('base64') } };
+  const initial = await compareCases([item], fakeClients);
+  let calls = 0;
+  await assert.rejects(compareCases([{ ...item, audioData: { ...item.audioData, data: Buffer.from('audio B').toString('base64') } }], {
+    gemini: async () => { calls++; return fakeClients.gemini(); },
+    'gpt-astra': async () => { calls++; return fakeClients['gpt-astra'](); },
+  }, { resume: initial }), /Invalid comparison checkpoint/);
+  assert.equal(calls, 0);
+});
+
+test('subset, duplicate and changed later checkpoint cases stop before paid work or replacing the full report', async () => {
+  const other = { ...sample, id: 'second', prompt: '두 번째 합성 사례' };
+  const initial = await compareCases([sample, other], fakeClients);
+  let calls = 0, writes = 0;
+  const clients = {
+    gemini: async () => { calls++; return fakeClients.gemini(); },
+    'gpt-astra': async () => { calls++; return fakeClients['gpt-astra'](); },
+  };
+  const onCheckpoint = () => { writes++; };
+  await assert.rejects(compareCases([sample], clients, { resume: initial, onCheckpoint }), /Invalid comparison checkpoint/);
+  await assert.rejects(compareCases([sample, other], clients, { resume: [initial[0], initial[0]], onCheckpoint }), /Invalid comparison checkpoint/);
+  const changed = structuredClone(initial); changed[1].promptSha256 = 'wrong';
+  await assert.rejects(compareCases([sample, other], clients, { resume: changed, onCheckpoint }), /Invalid comparison checkpoint/);
+  assert.equal(calls, 0);
+  assert.equal(writes, 0);
+  assert.equal(initial.length, 2);
+  assert.ok(initial.every(entry => entry.runs.length === 2));
+});
+
+test('a partial checkpoint may contain empty later cases while keeping the complete selected case set', async () => {
+  const other = { ...sample, id: 'second', prompt: '두 번째 합성 사례' };
+  const initial = await compareCases([sample, other], fakeClients);
+  initial[0].runs = initial[0].runs.slice(0, 1);
+  initial[1].runs = [];
+  const called: string[] = [];
+  const result = await compareCases([sample, other], {
+    gemini: async item => { called.push(`${item.id}:gemini`); return fakeClients.gemini(); },
+    'gpt-astra': async item => { called.push(`${item.id}:astra`); return fakeClients['gpt-astra'](); },
+  }, { resume: initial });
+  assert.deepEqual(called, ['synthetic:astra', 'second:gemini', 'second:astra']);
+  assert.ok(result.every(entry => entry.runs.length === 2 && entry.runs.every(run => run.status === 'completed')));
+});
+
+test('checkpoint reader rejects corrupt envelopes and evaluator versions before any model request', async () => {
+  const out = await mkdtemp(join(tmpdir(), 'ori-version-'));
+  try {
+    assert.deepEqual(await readComparisonCheckpoint(out), []);
+    await writeFile(join(out, 'comparison.json'), 'invalid json');
+    await assert.rejects(readComparisonCheckpoint(out), /Invalid comparison checkpoint/);
+    await writeFile(join(out, 'comparison.json'), JSON.stringify({ synthetic: false, reviewStatus: 'pending_manual_review', cases: [] }));
+    await assert.rejects(readComparisonCheckpoint(out), /Invalid comparison checkpoint/);
+    await writeFile(join(out, 'comparison.json'), JSON.stringify({ synthetic: true, reviewStatus: 'pending_manual_review', evaluatorCommit: 'a'.repeat(40), cases: [] }));
+    await assert.rejects(readComparisonCheckpoint(out, 'b'.repeat(40)), /version differs/);
+    assert.deepEqual(await readComparisonCheckpoint(out, 'a'.repeat(40)), []);
+  } finally { await rm(out, { recursive: true, force: true }); }
+});
+
+test('progress contains only the expected event fields and checkpoint failure stops subsequent paid calls', async () => {
+  const events: any[] = [];
+  let calls = 0;
+  await assert.rejects(compareCases([sample], {
+    gemini: async () => { calls++; throw Error('private secret'); },
+    'gpt-astra': async () => { calls++; return fakeClients['gpt-astra'](); },
+  }, { onProgress: event => { events.push(event); }, onCheckpoint: () => { throw Error('disk write failed'); } }), /disk write failed/);
+  assert.equal(calls, 1);
+  assert.deepEqual(events, [{ index: 1, total: 2, caseId: 'synthetic', engine: 'gemini', status: 'started' }]);
+  assert.doesNotMatch(JSON.stringify(events), /private|secret|disk/);
 });

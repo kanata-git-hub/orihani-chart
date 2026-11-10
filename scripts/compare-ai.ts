@@ -1,5 +1,5 @@
-import { createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, extname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createComparisonCases, SYNTHETIC_AUDIO_SCRIPT } from './comparisonCases.ts';
@@ -26,6 +26,18 @@ export interface ComparedCase {
   reviewPoints: string[];
   audio?: { mimeType: string; sha256: string; bytes: number };
   runs: ComparisonRun[];
+}
+export interface ComparisonProgress {
+  index: number;
+  total: number;
+  caseId: string;
+  engine: ComparisonEngine;
+  status: 'started' | 'completed' | 'failed' | 'reused';
+}
+export interface ComparisonOptions {
+  resume?: unknown;
+  onProgress?: (event: ComparisonProgress) => void | Promise<void>;
+  onCheckpoint?: (cases: ComparedCase[]) => void | Promise<void>;
 }
 
 export const RUBRIC = [
@@ -55,32 +67,88 @@ function safeFailure(error: unknown): ComparisonRun['error'] {
   return { code, ...(status ? { status } : {}) };
 }
 
-/** Serial calls use the exact same frozen prompt/audio values. One failure never hides the other engine's result. */
-export async function compareCases(cases: ComparisonCase[], clients: ComparisonClients): Promise<ComparedCase[]> {
-  const compared: ComparedCase[] = [];
-  for (const source of cases) {
+const ENGINES = ['gemini', 'gpt-astra'] as const;
+const isRecord = (value: unknown): value is Record<string, any> => !!value && typeof value === 'object' && !Array.isArray(value);
+const invalidCheckpoint = () => Error('Invalid comparison checkpoint. Inputs or saved results differ; no existing results were replaced. No request was sent.');
+
+function restoredRuns(entry: ComparedCase, resume: unknown): ComparisonRun[] {
+  if (resume === undefined || Array.isArray(resume) && resume.length === 0) return [];
+  if (!Array.isArray(resume)) throw invalidCheckpoint();
+  const matches = resume.filter(previous => isRecord(previous) && previous.id === entry.id);
+  if (matches.length !== 1) throw invalidCheckpoint();
+  const previous = matches[0];
+  if (previous.synthetic !== true || previous.kind !== entry.kind || previous.prompt !== entry.prompt ||
+    previous.promptSha256 !== entry.promptSha256 || promptHash(previous.prompt) !== previous.promptSha256 ||
+    !Array.isArray(previous.runs) || previous.runs.length > ENGINES.length ||
+    previous.runs.some((run: unknown, index: number) => !isRecord(run) || run.engine !== ENGINES[index] || !['completed', 'failed'].includes(run.status))) throw invalidCheckpoint();
+  if (entry.audio) {
+    if (!isRecord(previous.audio) || previous.audio.sha256 !== entry.audio.sha256 || previous.audio.mimeType !== entry.audio.mimeType || previous.audio.bytes !== entry.audio.bytes) throw invalidCheckpoint();
+  } else if (previous.audio !== undefined) throw invalidCheckpoint();
+  return previous.runs.map((run: any, index: number) => {
+    const result = run.result;
+    const valid = run.status === 'completed' && Number.isFinite(run.durationMs) && run.durationMs >= 0 &&
+      typeof run.actualModel === 'string' && !!run.actualModel.trim() && isRecord(result) &&
+      result.engine === ENGINES[index] && result.model === run.actualModel &&
+      (run.audioModel === undefined ? result.audioModel === undefined : typeof run.audioModel === 'string' && !!run.audioModel.trim() && result.audioModel === run.audioModel);
+    if (valid) return { engine: ENGINES[index], status: 'completed', durationMs: run.durationMs, actualModel: run.actualModel,
+      ...(run.audioModel ? { audioModel: run.audioModel } : {}), result: structuredClone(result) } as ComparisonRun;
+    if (run.status !== 'failed' || !Number.isFinite(run.durationMs) || run.durationMs < 0) throw invalidCheckpoint();
+    // Keep failed slots so an independently completed later engine remains available; only failed/missing slots retry.
+    return { engine: ENGINES[index], status: 'failed', durationMs: 0, error: { code: 'INVALID_AI_RESPONSE' } } as ComparisonRun;
+  });
+}
+
+/** Serial calls use identical input. Each settled request is checkpointed before proceeding. */
+export async function compareCases(cases: ComparisonCase[], clients: ComparisonClients, options: ComparisonOptions = {}): Promise<ComparedCase[]> {
+  if (options.resume !== undefined) {
+    if (!Array.isArray(options.resume)) throw invalidCheckpoint();
+    if (options.resume.length) {
+      const ids = new Set(cases.map(item => item.id));
+      const savedIds = new Set(options.resume.map(item => isRecord(item) ? item.id : undefined));
+      if (ids.size !== cases.length || savedIds.size !== options.resume.length || options.resume.length !== cases.length ||
+        [...savedIds].some(id => typeof id !== 'string' || !ids.has(id))) throw invalidCheckpoint();
+    }
+  }
+  const items = cases.map(source => {
     if (source.synthetic !== true) throw Error('Only synthetic evaluation cases are accepted.');
     const audioData = source.audioData ? Object.freeze({ ...source.audioData }) : undefined;
-    const item = Object.freeze({ ...source, audioData, reviewPoints: [...source.reviewPoints] });
+    return Object.freeze({ ...source, audioData, reviewPoints: [...source.reviewPoints] });
+  });
+  const compared = items.map(item => {
     const entry: ComparedCase = { id: item.id, title: item.title, kind: item.kind, synthetic: true, prompt: item.prompt,
       promptSha256: promptHash(item.prompt), reviewPoints: [...item.reviewPoints], runs: [] };
-    if (audioData) {
-      const bytes = Buffer.from(audioData.data, 'base64');
-      entry.audio = { mimeType: audioData.mimeType, sha256: createHash('sha256').update(bytes).digest('hex'), bytes: bytes.length };
+    if (item.audioData) {
+      const bytes = Buffer.from(item.audioData.data, 'base64');
+      entry.audio = { mimeType: item.audioData.mimeType, sha256: createHash('sha256').update(bytes).digest('hex'), bytes: bytes.length };
     }
-    for (const engine of ['gemini', 'gpt-astra'] as const) {
+    entry.runs = restoredRuns(entry, options.resume);
+    return entry;
+  });
+  for (let caseIndex = 0; caseIndex < items.length; caseIndex++) {
+    const item = items[caseIndex], entry = compared[caseIndex];
+    for (const [engineIndex, engine] of ENGINES.entries()) {
+      const progress = (status: ComparisonProgress['status']) => options.onProgress?.({ index: caseIndex * ENGINES.length + engineIndex + 1,
+        total: items.length * ENGINES.length, caseId: item.id, engine, status });
+      if (entry.runs[engineIndex]?.status === 'completed') {
+        await options.onCheckpoint?.(structuredClone(compared));
+        await progress('reused');
+        continue;
+      }
+      await progress('started');
       const started = performance.now();
       try {
         const result = await clients[engine](item);
         const meta = result as { engine?: unknown; model?: unknown; audioModel?: unknown } | null;
         if (meta?.engine !== engine || typeof meta.model !== 'string' || !meta.model.trim()) throw Error('INVALID_AI_RESPONSE');
-        entry.runs.push({ engine, status: 'completed', durationMs: Math.round(performance.now() - started), actualModel: meta.model,
-          ...(typeof meta.audioModel === 'string' ? { audioModel: meta.audioModel } : {}), result });
+        entry.runs[engineIndex] = { engine, status: 'completed', durationMs: Math.round(performance.now() - started), actualModel: meta.model,
+          ...(typeof meta.audioModel === 'string' ? { audioModel: meta.audioModel } : {}), result };
       } catch (error) {
-        entry.runs.push({ engine, status: 'failed', durationMs: Math.round(performance.now() - started), error: safeFailure(error) });
+        entry.runs[engineIndex] = { engine, status: 'failed', durationMs: Math.round(performance.now() - started), error: safeFailure(error) };
       }
+      // A storage error must stop paid work, not be misclassified as a provider failure.
+      await options.onCheckpoint?.(structuredClone(compared));
+      await progress(entry.runs[engineIndex].status);
     }
-    compared.push(entry);
   }
   return compared;
 }
@@ -103,10 +171,34 @@ export async function writeComparison(cases: ComparedCase[], outDir: string): Pr
   const generatedAt = new Date().toISOString();
   await mkdir(outDir, { recursive: true });
   const jsonPath = resolve(outDir, 'comparison.json'), htmlPath = resolve(outDir, 'comparison.html');
-  await writeFile(jsonPath, JSON.stringify({ generatedAt, synthetic: true, reviewStatus: 'pending_manual_review', clinicalEquivalence: 'not_established',
-    audioComparisonIncluded: cases.some(item => item.audio), cases }, null, 2) + '\n');
-  await writeFile(htmlPath, renderComparisonHtml(cases, generatedAt));
+  const atomicWrite = async (path: string, contents: string) => {
+    const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+    try { await writeFile(temporary, contents, { mode: 0o600 }); await rename(temporary, path); }
+    finally { await rm(temporary, { force: true }); }
+  };
+  // JSON is the resume authority. Commit it last; HTML can be regenerated after interruption.
+  await atomicWrite(htmlPath, renderComparisonHtml(cases, generatedAt));
+  await atomicWrite(jsonPath, JSON.stringify({ generatedAt, synthetic: true, reviewStatus: 'pending_manual_review', clinicalEquivalence: 'not_established',
+    evaluatorCommit: process.env.ORI_COMPARISON_COMMIT || null, audioComparisonIncluded: cases.some(item => item.audio), cases }, null, 2) + '\n');
   return { jsonPath, htmlPath };
+}
+
+export async function readComparisonCheckpoint(outDir: string, expectedCommit = process.env.ORI_COMPARISON_COMMIT): Promise<ComparedCase[]> {
+  const path = resolve(outDir, 'comparison.json');
+  let raw: unknown;
+  try {
+    const info = await stat(path);
+    if (!info.isFile() || info.size > 25_000_000) throw Error('Invalid comparison checkpoint.');
+    raw = JSON.parse(await readFile(path, 'utf8'));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return [];
+    throw Error('Invalid comparison checkpoint. No request was sent.');
+  }
+  if (!isRecord(raw) || raw.synthetic !== true || raw.reviewStatus !== 'pending_manual_review' || !Array.isArray(raw.cases)) {
+    throw Error('Invalid comparison checkpoint. No request was sent.');
+  }
+  if (expectedCommit && raw.evaluatorCommit !== expectedCommit) throw Error('Comparison checkpoint version differs. Use the matching evaluator or a new output directory. No request was sent.');
+  return raw.cases;
 }
 
 export async function prepareCases(audioData?: ComparisonCase['audioData']): Promise<ComparisonCase[]> {
@@ -120,13 +212,13 @@ async function main(args: string[]) {
   const values: Record<string, string> = {}, flags = new Set<string>(), caseIds: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (['--dry-run', '--help', '--confirm-synthetic-audio', '--print-audio-script'].includes(arg)) flags.add(arg);
+    if (['--dry-run', '--help', '--resume', '--confirm-synthetic-audio', '--print-audio-script'].includes(arg)) flags.add(arg);
     else if (['--out', '--case', '--audio', '--audio-mime'].includes(arg)) {
       if (!args[i + 1] || args[i + 1].startsWith('--')) throw Error('Missing option value.');
       if (arg === '--case') caseIds.push(args[++i]); else values[arg] = args[++i];
     } else throw Error('Unknown option. Use --help.');
   }
-  if (flags.has('--help')) { console.log('node --experimental-strip-types scripts/compare-ai.ts [--dry-run] [--case ID] [--out DIR] [--audio FILE --confirm-synthetic-audio] [--audio-mime MIME] [--print-audio-script]'); return; }
+  if (flags.has('--help')) { console.log('node --experimental-strip-types scripts/compare-ai.ts [--dry-run] [--case ID] [--out DIR] [--resume --out DIR] [--audio FILE --confirm-synthetic-audio] [--audio-mime MIME] [--print-audio-script]'); return; }
   if (flags.has('--print-audio-script')) { console.log(SYNTHETIC_AUDIO_SCRIPT); return; }
   let audioData: ComparisonCase['audioData'];
   if (values['--audio']) {
@@ -144,6 +236,11 @@ async function main(args: string[]) {
     if (caseIds.some(id => !cases.some(item => item.id === id))) throw Error('Unknown or unavailable case ID.');
     cases = cases.filter(item => caseIds.includes(item.id));
   }
+  if (flags.has('--resume') && !values['--out']) throw Error('--resume requires --out with the previous output directory.');
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  const outDir = resolve(values['--out'] || resolve(repo, 'generated/ai-comparison', stamp));
+  const resume = flags.has('--resume') ? await readComparisonCheckpoint(outDir) : undefined;
   if (flags.has('--dry-run')) {
     console.log(JSON.stringify({ mode: 'dry-run', paidCalls: 0, synthetic: true, audioComparisonIncluded: cases.some(item => item.audioData),
       cases: cases.map(({ id, kind, title, prompt }) => ({ id, kind, title, promptSha256: promptHash(prompt), promptCharacters: prompt.length })) }, null, 2));
@@ -154,10 +251,12 @@ async function main(args: string[]) {
   const client = (engine: ComparisonEngine) => (item: ComparisonCase) => item.kind === 'chart'
     ? generateChartResponse(item.prompt, item.audioData, engine)
     : generateFollowUpResponse(item.prompt, engine);
-  const compared = await compareCases(cases, { gemini: client('gemini'), 'gpt-astra': client('gpt-astra') });
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-  const files = await writeComparison(compared, resolve(values['--out'] || resolve(repo, 'generated/ai-comparison', stamp)));
+  const compared = await compareCases(cases, { gemini: client('gemini'), 'gpt-astra': client('gpt-astra') }, {
+    resume,
+    onProgress: event => { console.log(`ORI_PROGRESS ${JSON.stringify(event)}`); },
+    onCheckpoint: entries => writeComparison(entries, outDir).then(() => undefined),
+  });
+  const files = await writeComparison(compared, outDir);
   const failed = compared.reduce((sum, item) => sum + item.runs.filter(run => run.status === 'failed').length, 0);
   console.log(JSON.stringify({ ...files, cases: compared.length, failedCalls: failed, reviewStatus: 'pending_manual_review', clinicalEquivalence: 'not_established' }, null, 2));
   if (failed) process.exitCode = 1;
@@ -166,8 +265,8 @@ async function main(args: string[]) {
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   main(process.argv.slice(2)).catch(error => {
     // Only locally produced setup errors are readable; arbitrary request errors are masked inside compareCases.
-    const allowed = /^(Missing option value|Unknown option|Audio must be recorded|Audio MIME type|Synthetic audio must|--audio is required|Unknown or unavailable case|Both OPENAI_API_KEY)/;
+    const allowed = /^(Missing option value|Unknown option|Audio must be recorded|Audio MIME type|Synthetic audio must|--audio is required|--resume requires|Unknown or unavailable case|Both OPENAI_API_KEY|Invalid comparison checkpoint|Comparison checkpoint version differs)/;
     console.error(allowed.test(error?.message || '') ? error.message : 'Comparison setup failed. Check dependencies, synthetic input file and output directory. No secret details are logged.');
-    process.exitCode = 1;
+    process.exitCode = 2;
   });
 }
