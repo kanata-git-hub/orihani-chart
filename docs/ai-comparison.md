@@ -16,6 +16,16 @@ Dry run은 사례 이름·종류·프롬프트 SHA-256·길이만 출력하며 �
 
 ## 실제 동일 입력 비교
 
+### 기존 Cloud Run 키로 Cloud Shell에서 실행
+
+`scripts/cloud-shell-compare.py`는 현재 Google Cloud 프로젝트의 `orihani-chart` 서비스를 확인하고, 기존 `OPENAI_API_KEY`와 `GEMINI_API_KEY`를 비교 프로세스에만 전달합니다. 일반 환경 변수와 Secret Manager 참조를 지원합니다. 키 값과 Cloud Run 전체 설정은 터미널이나 결과 ZIP에 넣지 않습니다. 서비스가 없거나 대상이 불명확하면 멈추며, 다른 앱으로 대체하지 않습니다.
+
+```sh
+python3 scripts/cloud-shell-compare.py
+```
+
+기본 실행은 유료 API를 사용하는 합성 텍스트 비교 7건(각 엔진 1회씩, Gemini 재시도 제외)을 수행합니다. Node.js 22.6 이상과 로그인된 gcloud가 필요합니다. 설치와 비교는 임시 작업 디렉터리에서 진행하고, 비교 코드 버전은 스크립트에 고정된 커밋으로 검증합니다. Cloud Run 배포·설정 변경은 실행하지 않습니다. 결과 ZIP을 내려받은 뒤 `comparison.html`을 직접 열거나 `comparison.json`을 검토자에게 전달할 수 있습니다. 이 텍스트 실행에는 음성 검증이 포함되지 않습니다.
+
 실행 환경에 `OPENAI_API_KEY`와 `GEMINI_API_KEY`가 있어야 합니다. 키를 명령행 인수나 저장소에 넣지 마세요. OpenAI 크레딧을 연결한 API 조직과 키의 소속이 일치하는지 먼저 확인합니다. 이 도구는 크레딧 잔액을 확인하거나 유료 과금을 차단하지 않습니다.
 
 ```sh

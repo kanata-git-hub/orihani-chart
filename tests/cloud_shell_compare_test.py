@@ -1,0 +1,131 @@
+import contextlib
+import importlib.util
+import io
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+import zipfile
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+ROOT = Path(__file__).resolve().parents[1]
+SPEC = importlib.util.spec_from_file_location("cloud_shell_compare", ROOT / "scripts/cloud-shell-compare.py")
+runner = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = runner
+SPEC.loader.exec_module(runner)
+
+
+def service(env, annotations=None):
+    return {"metadata": {"name": "orihani-chart"}, "spec": {"template": {
+        "metadata": {"annotations": annotations or {}}, "spec": {"containers": [{"env": env}]}}}}
+
+
+def plain_service():
+    return service([{"name": name, "value": "fake-key-for-" + name} for name in runner.KEY_NAMES])
+
+
+class CloudShellCompareTests(unittest.TestCase):
+    def test_child_setup_environment_scrubs_credentials_and_disables_gcloud_logs(self):
+        scrubbed = (*runner.KEY_NAMES, "OPENAI_API_KEY1", "GOOGLE_API_KEY", "NODE_OPTIONS", "GOOGLE_GEMINI_BASE_URL", "GOOGLE_VERTEX_BASE_URL", "GOOGLE_GENAI_USE_VERTEXAI")
+        with patch.dict(os.environ, {name: "SENSITIVE" for name in scrubbed}):
+            env = runner.clean_environment()
+        for name in scrubbed:
+            self.assertNotIn(name, env)
+        self.assertEqual(env["CLOUDSDK_CORE_LOG_HTTP"], "false")
+        self.assertEqual(env["CLOUDSDK_CORE_DISABLE_FILE_LOGGING"], "true")
+
+    def test_gcloud_failure_never_exposes_raw_output_or_error(self):
+        failed = subprocess.CompletedProcess(["gcloud"], 1, "RAW-SECRET-STDOUT", "RAW-SECRET-STDERR")
+        with patch.object(runner.subprocess, "run", return_value=failed) as execute:
+            with self.assertRaisesRegex(runner.SetupError, "fixed error") as caught:
+                runner.captured(["gcloud", "config", "get-value", "project"], error="fixed error")
+        self.assertNotIn("RAW-SECRET", str(caught.exception))
+        self.assertEqual(execute.call_args.kwargs["stdout"], subprocess.PIPE)
+        self.assertEqual(execute.call_args.kwargs["stderr"], subprocess.PIPE)
+
+    def test_exact_service_and_single_container_required(self):
+        good = {"metadata": {"name": "orihani-chart", "labels": {"cloud.googleapis.com/location": "asia-northeast3"}}}
+        self.assertEqual(runner.select_service_region([good]), "asia-northeast3")
+        for entries in ([], [good, good], [{"metadata": {"name": "orihani-translate"}}]):
+            with self.assertRaises(runner.SetupError):
+                runner.select_service_region(entries)
+        described = plain_service()
+        described["spec"]["template"]["spec"]["containers"].append({"env": []})
+        with self.assertRaises(runner.SetupError):
+            runner.extract_key_sources(described, "fixture-project")
+
+    def test_plain_keys_need_no_secret_manager_and_are_not_in_repr(self):
+        sources = runner.extract_key_sources(plain_service(), "fixture-project")
+        with patch.object(runner, "captured", side_effect=AssertionError("Unexpected secret read")):
+            keys = runner.resolve_keys(sources)
+        for name in runner.KEY_NAMES:
+            self.assertEqual(keys[name], "fake-key-for-" + name)
+            self.assertNotIn(keys[name], repr(sources))
+
+    def test_cross_project_alias_and_versions_are_honored(self):
+        described = service([
+            {"name": "OPENAI_API_KEY", "valueFrom": {"secretKeyRef": {"name": "openai-alias", "key": "2"}}},
+            {"name": "GEMINI_API_KEY", "valueFrom": {"secretKeyRef": {"name": "gemini-secret", "key": "latest"}}},
+        ], {"run.googleapis.com/secrets": "openai-alias:projects/other-project/secrets/openai-secret"})
+        sources = runner.extract_key_sources(described, "fixture-project")
+        with patch.object(runner, "captured", side_effect=["FAKE-OPENAI", "FAKE-GEMINI"]) as execute:
+            self.assertEqual(runner.resolve_keys(sources), {"OPENAI_API_KEY": "FAKE-OPENAI", "GEMINI_API_KEY": "FAKE-GEMINI"})
+        commands = [call.args[0] for call in execute.call_args_list]
+        self.assertEqual(commands[0], ["gcloud", "secrets", "versions", "access", "2", "--secret", "openai-secret", "--project", "other-project", "--quiet"])
+        self.assertIn("fixture-project", commands[1])
+
+    def test_duplicate_keys_and_mixed_value_reference_are_rejected(self):
+        described = plain_service()
+        env = described["spec"]["template"]["spec"]["containers"][0]["env"]
+        env.append(dict(env[0]))
+        with self.assertRaises(runner.SetupError):
+            runner.extract_key_sources(described, "fixture-project")
+        env.pop()
+        env[0]["valueFrom"] = {"secretKeyRef": {"name": "other", "key": "1"}}
+        with self.assertRaises(runner.SetupError):
+            runner.extract_key_sources(described, "fixture-project")
+
+    def test_live_keys_go_to_direct_node_only_and_output_stays_captured(self):
+        child = Mock(returncode=0)
+        child.communicate.return_value = (b"SHOULD-NOT-PRINT", b"SHOULD-NOT-PRINT")
+        child.poll.return_value = 0
+        observed = {}
+        def launch(command, **kwargs):
+            observed.update(command=command, env=dict(kwargs["env"]), stdout=kwargs["stdout"], stderr=kwargs["stderr"])
+            return child
+        output = io.StringIO()
+        keys = {"OPENAI_API_KEY": "FAKE-OPENAI", "GEMINI_API_KEY": "FAKE-GEMINI"}
+        with patch.object(runner.subprocess, "Popen", side_effect=launch), contextlib.redirect_stdout(output):
+            self.assertEqual(runner.run_comparison(Path("/repo"), Path("/result"), keys), 0)
+        self.assertEqual(observed["command"][:3], ["node", "--experimental-strip-types", "scripts/compare-ai.ts"])
+        self.assertEqual(observed["env"]["OPENAI_API_KEY"], "FAKE-OPENAI")
+        self.assertNotIn("FAKE-OPENAI", " ".join(observed["command"]))
+        self.assertEqual(observed["stdout"], subprocess.PIPE)
+        self.assertEqual(observed["stderr"], subprocess.PIPE)
+        self.assertNotIn("SHOULD-NOT-PRINT", output.getvalue())
+
+    def test_zip_contains_only_reports_and_rejects_key_leakage(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            output = home / "results"
+            output.mkdir()
+            (output / "comparison.json").write_text(json.dumps({"cases": [{"runs": [{"status": "completed"}, {"status": "failed"}]}]}))
+            (output / "comparison.html").write_text("<p>synthetic output</p>")
+            (output / "unrelated.env").write_text("must not be archived")
+            keys = {"OPENAI_API_KEY": "FAKE-OPENAI-KEY", "GEMINI_API_KEY": "FAKE-GEMINI-KEY"}
+            with patch.object(runner.Path, "home", return_value=home):
+                archive, count, failures = runner.archive_results(output, keys)
+                self.assertEqual((count, failures), (1, 1))
+                with zipfile.ZipFile(archive) as bundle:
+                    self.assertEqual(set(bundle.namelist()), {"comparison.json", "comparison.html"})
+                (output / "comparison.html").write_text("FAKE-OPENAI-KEY")
+                with self.assertRaises(runner.SetupError):
+                    runner.archive_results(output, keys)
+                self.assertEqual(len(list(home.glob("*.zip"))), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()
