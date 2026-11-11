@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Stethoscope, CheckCircle2, RefreshCw, Send, Loader2, Mic } from 'lucide-react';
-import { PatientBriefing } from '../types';
+import { PatientBriefing, FollowUpEngine } from '../types';
 import { InputField } from './common/InputField';
 import { TextAreaField } from './common/TextAreaField';
 import { fileToBase64 } from '../utils/fileUtils';
@@ -10,6 +10,8 @@ interface PatientBriefingFormProps {
   briefing: PatientBriefing;
   isSaved: boolean;
   isLoading: boolean;
+  selectedEngine: FollowUpEngine;
+  onEngineChange: (engine: FollowUpEngine) => void;
   onFieldChange: (name: keyof PatientBriefing, value: any) => void;
   onResetClick: () => void;
   onGenerateClick: (audioData?: { mimeType: string; data: string }) => void;
@@ -22,9 +24,12 @@ export const PatientBriefingForm: React.FC<PatientBriefingFormProps> = ({
   isLoading,
   onFieldChange,
   onResetClick,
-  onGenerateClick
+  onGenerateClick,
+  selectedEngine,
+  onEngineChange
 }) => {
   const [audioFile, setAudioFile] = useState<File | null>(null);
+  const [audioError, setAudioError] = useState<string | null>(null);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
@@ -34,16 +39,19 @@ export const PatientBriefingForm: React.FC<PatientBriefingFormProps> = ({
   const handleAudioChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       setAudioFile(e.target.files[0]);
+      setAudioError(null);
     }
   };
 
   const handleGenerate = async () => {
+    setAudioError(null);
     let audioData = undefined;
     if (audioFile) {
       try {
         audioData = await fileToBase64(audioFile);
       } catch (error) {
-        console.error("Failed to read audio file:", error);
+        setAudioError('음성 파일을 읽지 못했습니다. 파일을 다시 선택해주세요.');
+        return;
       }
     }
     onGenerateClick(audioData);
@@ -75,6 +83,19 @@ export const PatientBriefingForm: React.FC<PatientBriefingFormProps> = ({
       </div>
 
       <div className="space-y-4">
+        <fieldset disabled={isLoading} className="mb-4">
+          <legend className="text-base font-bold mb-2">분석 엔진</legend>
+          <div className="flex gap-2">
+            {(['gemini', 'gpt-astra'] as const).map(engine => (
+              <button key={engine} type="button" aria-pressed={selectedEngine === engine}
+                onClick={() => onEngineChange(engine)}
+                className={`flex-1 border border-primary py-2 font-bold disabled:opacity-50 ${selectedEngine === engine ? 'bg-accent' : 'bg-white'}`}>
+                {engine === 'gemini' ? 'Gemini' : 'GPT Astra'}
+              </button>
+            ))}
+          </div>
+        </fieldset>
+        {audioError && <p role="alert" className="text-red-700 text-sm">{audioError}</p>}
         <button
           onClick={handleGenerate}
           disabled={isLoading || (!briefing.mainSymptom && !audioFile)}

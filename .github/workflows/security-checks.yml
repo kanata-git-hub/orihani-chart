@@ -16,6 +16,9 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run lint
       - run: npm run test:security
+      - run: npm run test:chart
+      - run: npm run test:comparison
+      - run: python3 -m unittest discover -s tests -p 'cloud_shell_compare_test.py'
       - run: npm run test:followup
       - run: npm run test:recipe
       - run: npm run build

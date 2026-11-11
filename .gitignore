@@ -6,3 +6,7 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Generated model comparison outputs may contain clinical text.
+generated/ai-comparison/
+__pycache__/

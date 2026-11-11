@@ -4,7 +4,8 @@ import { generateChartPrompt } from "./prompts";
 
 export const generateAIChart = async (
   briefing: PatientBriefing,
-  audioData?: { mimeType: string; data: string }
+  audioData?: { mimeType: string; data: string },
+  engine: FollowUpEngine = 'gemini'
 ): Promise<AnalysisResult> => {
   const prompt = generateChartPrompt(briefing);
 
@@ -16,7 +17,8 @@ export const generateAIChart = async (
       },
       body: JSON.stringify({
         prompt,
-        audioData
+        audioData,
+        engine
       })
     });
 
@@ -26,6 +28,11 @@ export const generateAIChart = async (
     }
 
     const parsed = await response.json();
+    if (parsed.engine !== engine || typeof parsed.model !== 'string' ||
+        (engine === 'gpt-astra' && (typeof parsed.chartContent !== 'string' ||
+          typeof parsed.diagnosticGuide !== 'string' || typeof parsed.treatmentRecommendation !== 'string'))) {
+      throw new Error('INVALID_AI_RESPONSE');
+    }
     if (parsed.herbsRecipe && Array.isArray(parsed.herbsRecipe) && parsed.herbsRecipe.length > 0) {
       parsed.herbAmountsHtml = await fetchHerbAmountsHtml(parsed.herbsRecipe);
     }

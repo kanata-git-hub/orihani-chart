@@ -1,15 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateFollowUpResponse, ASTRA_MODEL } from '../followUpEngine.ts';
+import { OPENAI_CLINICAL_INSTRUCTIONS } from '../openaiClinicalInstructions.ts';
 
-const prompt = '### 합성 테스트\n기존 입력과 분석 지시문을 그대로 전달합니다.';
+const prompt = '  ### 합성 테스트\n기존 입력과 분석 지시문을 그대로 전달합니다.  ';
 const env = { OPENAI_API_KEY: 'synthetic-openai-key', GEMINI_API_KEY: 'synthetic-gemini-key' };
 const completed = (extra: object = {}) => ({ status: 'completed', model: ASTRA_MODEL,
   output: [{ type: 'reasoning', summary: [{ text: 'not for display' }] },
     { type: 'message', content: [{ type: 'output_text', text: '첫 분석' }, { type: 'output_text', text: '두 번째 절' }] }], ...extra });
 const reply = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status });
 
-test('Astra uses the fixed model and original prompt through the server-only Responses API', async () => {
+test('Astra adds the approved directive and preserves the original follow-up prompt and settings', async () => {
   let calls = 0;
   const result = await generateFollowUpResponse(prompt, 'gpt-astra', { env,
     geminiGenerate: async () => { throw Error('must not fall back'); },
@@ -19,7 +20,8 @@ test('Astra uses the fixed model and original prompt through the server-only Res
       assert.equal(options?.redirect, 'error');
       assert.equal(new Headers(options?.headers).get('Authorization'), `Bearer ${env.OPENAI_API_KEY}`);
       const body = JSON.parse(options!.body as string);
-      assert.deepEqual(body, { model: ASTRA_MODEL, input: prompt, store: false, reasoning: { effort: 'medium' }, max_output_tokens: 16384 });
+      assert.deepEqual(body, { model: ASTRA_MODEL, instructions: OPENAI_CLINICAL_INSTRUCTIONS, input: prompt,
+        store: false, reasoning: { effort: 'medium' }, max_output_tokens: 16384 });
       assert.ok(options?.signal instanceof AbortSignal);
       return reply(completed());
     },

@@ -39,6 +39,12 @@ export const AnalysisOutput: React.FC<AnalysisOutputProps> = ({ result }) => {
 
   return (
     <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+      {result.engine && result.model && (
+        <p className="xl:col-span-3 text-sm font-bold" aria-label="결과 생성 엔진">
+          {result.engine === 'gpt-astra' ? 'GPT Astra' : 'Gemini'} · {result.model}
+          {result.audioModel ? ` · 음성 전사: ${result.audioModel}` : ''}
+        </p>
+      )}
       <div className="xl:col-span-2 space-y-6">
         {/* 1. Chart Content Box */}
         <div className="bg-primary text-white border border-primary p-6 shadow-[4px_4px_0px_0px_rgba(255,255,255,0.2)] flex flex-col">

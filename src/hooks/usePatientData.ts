@@ -1,7 +1,7 @@
 import { scopedStorage } from '../accountStorage';
 import { auth } from '../services/firebase';
 import { useState, useEffect } from 'react';
-import { PatientBriefing, PatientData } from '../types';
+import { PatientBriefing, PatientData, FollowUpEngine } from '../types';
 import { initialBriefing } from '../constants';
 
 export const usePatientData = () => {
@@ -60,6 +60,13 @@ export const usePatientData = () => {
     });
   };
 
+  const updateEngine = (tab: number, selectedEngine: FollowUpEngine) => {
+    setPatientData(prev => ({
+      ...prev,
+      [tab]: { ...(prev[tab] || { briefing: { ...initialBriefing }, result: null }), selectedEngine },
+    }));
+  };
+
   const updateResult = (tab: number, result: any) => {
     setPatientData(prev => {
       const currentTab = prev[tab] || { briefing: { ...initialBriefing }, result: null };
@@ -98,6 +105,7 @@ export const usePatientData = () => {
     patientData,
     isSaved,
     updateBriefingField,
+    updateEngine,
     updateResult,
     resetTab,
     resetAllTabs

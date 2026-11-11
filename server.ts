@@ -7,7 +7,7 @@ import type { SheetRows } from './prescriptionRecipe.ts';
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
-import { GoogleGenAI, Type } from "@google/genai";
+import { ChartError, generateChartResponse } from './chartEngine.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -27,126 +27,21 @@ const bodyError: express.ErrorRequestHandler = (error, _req, res, next) => {
 app.use('/api', bodyError);
 
 // API Endpoints
-const executeWithRetry = async (apiCall: () => Promise<any>, maxRetries = 3, baseDelayMs = 5000) => {
-  for (let i = 0; i < maxRetries; i++) {
-    try {
-      return await apiCall();
-    } catch (error: any) {
-      const errorMsg = error?.message?.toLowerCase() || '';
-      const isRateLimit = error?.status === 429 || errorMsg.includes('429') || errorMsg.includes('quota') || errorMsg.includes('rate limit');
-      if (isRateLimit && i < maxRetries - 1) {
-        const waitTime = baseDelayMs * (i + 1);
-        console.warn(`[API Rate Limit] Retrying in ${waitTime / 1000}s... (${i + 1}/${maxRetries})`);
-        await new Promise(resolve => setTimeout(resolve, waitTime));
-        continue;
-      }
-      throw error;
-    }
-  }
-  throw new Error("Maximum retries exceeded");
-};
-
 app.post("/api/generate-chart", async (req, res) => {
+  const controller = new AbortController();
+  const onClose = () => { if (!res.writableEnded) controller.abort(); };
+  res.once('close', onClose);
+  res.set('Cache-Control', 'no-store');
   try {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) throw new Error("API Key not configured on the server");
-
-    const ai = new GoogleGenAI({ apiKey });
-    const { prompt, audioData } = req.body;
-
-    const contents: any[] = [{ text: prompt }];
-    if (audioData) {
-      contents.unshift({
-        inlineData: { mimeType: audioData.mimeType, data: audioData.data }
-      });
-    }
-
-    const models = ["gemini-3.1-pro-preview", "gemini-3.6-flash", "gemini-3.5-flash-lite"];
-    let lastError: any;
-
-    for (const model of models) {
-      try {
-        const response = await executeWithRetry(() =>
-          ai.models.generateContent({
-            model: model,
-            contents: [{ parts: contents }],
-            config: { 
-              responseMimeType: "application/json",
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  chartContent: { type: Type.STRING },
-                  diagnosticGuide: { type: Type.STRING },
-                  matchProbability: { type: Type.STRING },
-                  matchReason: { type: Type.STRING },
-                  assessmentDisease: { type: Type.STRING },
-                  treatmentRecommendation: { type: Type.STRING },
-                  recommendedTreatmentType: { type: Type.STRING },
-                  consultationFeedback: { type: Type.STRING },
-                  herbsRecipe: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        합방_처방: {
-                          type: Type.ARRAY,
-                          items: { type: Type.STRING }
-                        },
-                        가감_목록: {
-                          type: Type.ARRAY,
-                          items: {
-                            type: Type.OBJECT,
-                            properties: {
-                              약재명: { type: Type.STRING },
-                              동작: { type: Type.STRING },
-                              용량_g: { type: Type.NUMBER },
-                              남길_비율: { type: Type.NUMBER }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                },
-                required: ["chartContent", "diagnosticGuide", "treatmentRecommendation"]
-              }
-            }
-          })
-        );
-        let rawText = response.text || '';
-        if (!rawText) {
-          throw new Error("Empty response from AI (possibly blocked by safety filters)");
-        }
-        
-        let parsed;
-        const codeBlockMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-        if (codeBlockMatch) {
-          parsed = JSON.parse(codeBlockMatch[1].trim());
-        } else {
-          // Fallback robust extractor
-          const firstBrace = rawText.indexOf('{');
-          const lastBrace = rawText.lastIndexOf('}');
-          if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-            parsed = JSON.parse(rawText.substring(firstBrace, lastBrace + 1));
-          } else {
-            parsed = JSON.parse(rawText.trim());
-          }
-        }
-        
-        if (!parsed.chartContent && !parsed.diagnosticGuide) {
-          throw new Error("AI returned empty fields in JSON");
-        }
-        return res.json(parsed);
-      } catch (err: any) {
-        console.warn(`Model ${model} failed. Trying next...`);
-        lastError = err;
-      }
-    }
-    throw lastError;
-  } catch (error: any) {
-    console.error('Chart generation failed.');
-    const quota = error?.status === 429;
-    res.status(quota ? 429 : 502).json({ error: quota ? 'QUOTA_EXCEEDED' : '차트를 생성하지 못했습니다. 잠시 후 다시 시도해주세요.' });
+    const result = await generateChartResponse(req.body?.prompt, req.body?.audioData, req.body?.engine, { signal: controller.signal });
+    if (!res.destroyed) return res.json(result);
+  } catch (error) {
+    const code = error instanceof ChartError ? error.message : 'CHART_GENERATION_FAILED';
+    // Only bounded application codes are logged: never prompts, audio, keys or upstream bodies.
+    console.error('Chart generation failed:', code);
+    if (!res.destroyed) res.status(error instanceof ChartError ? error.status : 502).json({ error: code });
+  } finally {
+    res.off('close', onClose);
   }
 });
 

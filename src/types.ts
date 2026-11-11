@@ -16,6 +16,9 @@ export interface PatientBriefing {
 }
 
 export interface AnalysisResult {
+  engine?: FollowUpEngine;
+  model?: string;
+  audioModel?: string;
   chartContent: string;
   diagnosticGuide: string;
   matchProbability?: string;
@@ -71,6 +74,7 @@ export interface FollowUpData {
 }
 
 export interface PatientData {
+  selectedEngine?: FollowUpEngine;
   briefing: PatientBriefing;
   result: AnalysisResult | null;
 }
