@@ -27,7 +27,9 @@ result identifies the actual engine/model. Existing drafts and requests still
 default to Gemini while quality comparison is pending. No engine silently falls
 back to the other provider. Failed requests preserve the previous chart.
 
-Both providers use the unchanged prompt factories in `src/services/prompts.ts`.
+Both providers use the shared prompt factories in `src/services/prompts.ts`.
+The treatment criteria include neck/back mobility limitations when considering
+Chuna and permit combinations with a stated additional benefit.
 Astra uses `gpt-6-astra` with medium reasoning and strict JSON output; the existing
 herb-calculation flow receives the same recipe fields. Uploaded consultations use
 `gpt-transcribe` followed by Astra; Gemini still receives the original recording.
