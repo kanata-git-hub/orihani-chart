@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 REPOSITORY = "https://github.com/kanata-git-hub/orihani-chart.git"
-PINNED_COMMIT = "5b9aa5a0a442af1465ce0de99456f117dd78ab08"
+PINNED_COMMIT = "bcd998055187bbfd4dc223e14dbaa10b09ebf510"
 GEMINI_BASELINE_COMMIT = "87dae4f47f6ba551bb02b4d0df4cb7bd86962b34"
 SERVICE = "orihani-chart"
 KEY_NAMES = ("OPENAI_API_KEY", "GEMINI_API_KEY")
