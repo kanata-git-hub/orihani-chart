@@ -4,8 +4,10 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { createServer } from 'node:net';
 import { once } from 'node:events';
+import { CHART_OPENAI_INSTRUCTIONS } from '../openaiClinicalInstructions.ts';
 
 const chart = {
   chartContent: '- c/c : 합성 시험 증상\n- Assessment : 합성 시험 진단',
@@ -57,6 +59,7 @@ async function startServer({ withKey = true, transcriptionFailure = false } = {}
       if (target === 'https://api.openai.com/v1/responses') {
         assert.equal(${transcriptionFailure}, false, 'transcription failure must stop before chart generation');
         const input = JSON.parse(options.body);
+        assert.equal(input.instructions, ${JSON.stringify(CHART_OPENAI_INSTRUCTIONS)});
         assert.equal(options.method,'POST');
         assert.equal(options.redirect,'error');
         assert.equal(input.model,'gpt-6-astra');
@@ -101,7 +104,7 @@ async function startServer({ withKey = true, transcriptionFailure = false } = {}
   await once(probe, 'listening');
   const port = probe.address().port;
   await new Promise(resolve => probe.close(resolve));
-  const child = spawn(process.execPath, ['--experimental-strip-types', '--import', preload, 'server.ts'], {
+  const child = spawn(process.execPath, ['--experimental-strip-types', '--import', pathToFileURL(preload).href, 'server.ts'], {
     cwd: new URL('..', import.meta.url),
     env: { ...process.env, NODE_ENV: 'production', PORT: String(port), GEMINI_API_KEY: 'synthetic-gemini-secret', OPENAI_API_KEY: withKey ? 'synthetic-openai-secret' : '' },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -228,3 +231,4 @@ test('failed audio transcription never becomes a successful chart without audio'
     assert.doesNotMatch(server.logs(), /upstream-secret-marker|synthetic-openai-secret/);
   } finally { await server.close(); }
 });
+

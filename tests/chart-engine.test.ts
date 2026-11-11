@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ChartError, generateChartResponse, parseChartResult, chartResponseSchema } from '../chartEngine.ts';
 import type { ChartDependencies } from '../chartEngine.ts';
+import { CHART_OPENAI_INSTRUCTIONS, FOLLOWUP_OPENAI_INSTRUCTIONS } from '../openaiClinicalInstructions.ts';
 
 const fixture = () => ({
   chartContent: '- c/c : 합성 증상', diagnosticGuide: '[감별 진단 포인트]\n- 합성 소견',
@@ -23,7 +24,7 @@ const errorCode = (code: string, status?: number) => (error: unknown) => {
   return true;
 };
 
-test('Astra preserves the exact original prompt and sends strict schema with stateless medium reasoning', async () => {
+test('Astra keeps original input separate from chart instructions and preserves model and output settings', async () => {
   const prompt = '  변경 금지\n원문 프롬프트  ';
   let calls = 0;
   const result = await generateChartResponse(prompt, undefined, 'gpt-astra', {
@@ -34,6 +35,8 @@ test('Astra preserves the exact original prompt and sends strict schema with sta
       assert.equal(new Headers(init.headers).get('authorization'), 'Bearer synthetic-openai');
       const body = JSON.parse(String(init.body));
       assert.equal(body.input, prompt);
+      assert.equal(body.instructions, CHART_OPENAI_INSTRUCTIONS);
+      assert.notEqual(body.instructions, FOLLOWUP_OPENAI_INSTRUCTIONS);
       assert.equal(body.model, 'gpt-6-astra'); assert.equal(body.store, false);
       assert.deepEqual(body.reasoning, { effort: 'medium' });
       assert.equal(body.max_output_tokens, 16384);
@@ -45,6 +48,14 @@ test('Astra preserves the exact original prompt and sends strict schema with sta
   });
   assert.equal(calls, 1);
   assert.deepEqual(result, { ...fixture(), engine: 'gpt-astra', model: 'gpt-6-astra-synthetic-snapshot' });
+});
+
+test('Astra accepts a meaningful nonnumeric probability without changing the string output contract', async () => {
+  const chart = { ...fixture(), matchProbability: '정량 산출 근거 없음', matchReason: '입력된 소견을 근거로 우선 검토합니다.' };
+  const result = await generateChartResponse('synthetic', undefined, 'gpt-astra', { env, request: request(() => completed(chart)) });
+  assert.equal(result.matchProbability, chart.matchProbability);
+  assert.equal(result.matchReason, chart.matchReason);
+  assert.throws(() => parseChartResult(JSON.stringify({ ...chart, matchProbability: 80 }), true), errorCode('INVALID_AI_RESPONSE'));
 });
 
 test('all object schema properties are required and extra keys forbidden', () => {
@@ -135,6 +146,7 @@ test('transcription multipart uses languages[] and sends unchanged full transcri
       return new Response(JSON.stringify({ text: transcript }));
     }
     const body = JSON.parse(String(init.body));
+    assert.equal(body.instructions, CHART_OPENAI_INSTRUCTIONS);
     assert.equal(body.input[0].content[0].text, '원문');
     assert.equal(body.input[0].content[1].text, `[진료 음성의 원문 전사 — 요약하지 않은 대화 자료]\n${transcript}`);
     return completed();

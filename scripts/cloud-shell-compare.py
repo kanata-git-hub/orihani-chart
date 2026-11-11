@@ -5,6 +5,7 @@ No deployment or cloud resource mutation. Credentials are captured in memory,
 never printed or written to a key file, and passed only to the comparison child.
 --dry-run does not access Cloud Run, Secret Manager, or either model API.
 --config-check FILE checks an offline service-description fixture only.
+--reuse-gemini reuses the completed first comparison's Gemini responses only.
 """
 from __future__ import annotations
 
@@ -26,6 +27,7 @@ from pathlib import Path
 
 REPOSITORY = "https://github.com/kanata-git-hub/orihani-chart.git"
 PINNED_COMMIT = "87dae4f47f6ba551bb02b4d0df4cb7bd86962b34"
+GEMINI_BASELINE_COMMIT = "87dae4f47f6ba551bb02b4d0df4cb7bd86962b34"
 SERVICE = "orihani-chart"
 KEY_NAMES = ("OPENAI_API_KEY", "GEMINI_API_KEY")
 IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
@@ -244,13 +246,37 @@ def persistent_output(project: str, region: str) -> Path:
     return current
 
 
-def run_comparison(repo: Path, output: Path, keys: dict[str, str], *, lock_fd: int | None = None) -> int:
+def existing_gemini_baseline(project: str, region: str) -> Path:
+    """Select the known earlier report without creating or changing its path.
+
+    The comparison runner validates its contents before making any paid request.
+    Missing or redirected reports must never turn a candidate-only run into a
+    fresh two-provider comparison.
+    """
+    if not valid_identifier(project) or not REGION.fullmatch(region):
+        raise SetupError("기존 Gemini 결과 위치를 확인하지 못했습니다.")
+    current = Path.home()
+    for part in ("orihani-ai-comparison", project, region, GEMINI_BASELINE_COMMIT):
+        current = current / part
+        if current.is_symlink() or not current.is_dir():
+            raise SetupError("기존 Gemini 결과 폴더가 없거나 심볼릭 링크입니다. 이전 비교를 실행한 프로젝트와 Cloud Shell 계정을 확인해주세요. 새 Gemini 요청은 하지 않았습니다.")
+    report = current / "comparison.json"
+    if report.is_symlink() or not report.is_file():
+        raise SetupError("기존 comparison.json이 없거나 심볼릭 링크입니다. 새 Gemini 요청은 하지 않았습니다.")
+    return report
+
+
+def run_comparison(repo: Path, output: Path, keys: dict[str, str], *, lock_fd: int | None = None,
+                   baseline: Path | None = None) -> int:
     child_env = clean_environment()
     child_env.update(keys)
     child_env["ORI_COMPARISON_COMMIT"] = PINNED_COMMIT
+    command = ["node", "--experimental-strip-types", "scripts/compare-ai.ts", "--out", str(output), "--resume"]
+    if baseline is not None:
+        command.extend(["--baseline", str(baseline)])
     child = None
     try:
-        child = subprocess.Popen(["node", "--experimental-strip-types", "scripts/compare-ai.ts", "--out", str(output), "--resume"],
+        child = subprocess.Popen(command,
                                  cwd=repo, env=child_env, stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE, start_new_session=True,
                                  pass_fds=() if lock_fd is None else (lock_fd,))
@@ -310,7 +336,11 @@ def main(argv: list[str] | None = None) -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true")
     mode.add_argument("--config-check", type=Path, metavar="SERVICE_JSON")
+    parser.add_argument("--reuse-gemini", action="store_true",
+                        help="Reuse the first comparison's Gemini results; request only new OpenAI results.")
     options = parser.parse_args(argv)
+    if options.config_check and options.reuse_gemini:
+        parser.error("--reuse-gemini cannot be combined with --config-check")
     if options.config_check:
         service = read_json(options.config_check.read_text(encoding="utf-8"), "설정 점검 파일을 읽지 못했습니다.")
         extract_key_sources(service, "offline-config-check")
@@ -324,6 +354,7 @@ def main(argv: list[str] | None = None) -> int:
     if not match or tuple(map(int, match.groups())) < (22, 6, 0):
         raise SetupError("Node.js 22.6 이상이 필요합니다. 실행 환경의 Node.js 버전을 확인해주세요. 자동 설치는 하지 않았습니다.")
     sources = None
+    baseline = None
     if not options.dry_run:
         print("[1/5] 현재 프로젝트와 orihani-chart 설정을 확인합니다.", flush=True)
         project = captured(["gcloud", "config", "get-value", "project", "--quiet"], error="현재 Google Cloud 프로젝트를 확인하지 못했습니다.").strip()
@@ -334,6 +365,8 @@ def main(argv: list[str] | None = None) -> int:
                                      error="현재 프로젝트의 Cloud Run 서비스를 조회하지 못했습니다."),
                              "Cloud Run 서비스 목록 형식을 확인하지 못했습니다.")
         region = select_service_region(services)
+        if options.reuse_gemini:
+            baseline = existing_gemini_baseline(project, region)
         service = read_json(captured(["gcloud", "run", "services", "describe", SERVICE, "--project", project,
                                      "--region", region, "--format=json", "--quiet"],
                                     error="orihani-chart 설정을 조회하지 못했습니다."),
@@ -354,10 +387,14 @@ def main(argv: list[str] | None = None) -> int:
         captured(["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"], cwd=repo, timeout=600, error="비교 도구 의존성을 설치하지 못했습니다.")
         captured(["npm", "run", "compare:ai", "--", "--dry-run"], cwd=repo, error="합성 비교 사례를 준비하지 못했습니다.")
         if options.dry_run:
+            if options.reuse_gemini:
+                print("기존 Gemini 결과 파일은 실제 실행 시 확인합니다. 준비 점검에서는 파일 조회나 모델 요청을 하지 않습니다.", flush=True)
             print("준비 점검 완료. Cloud Run·보안 비밀·모델 API에 접근하지 않았습니다.", flush=True)
             return 0
         output = persistent_output(project, region)
         print(f"중간 결과 저장 위치: {output}", flush=True)
+        if baseline is not None:
+            print("기존 Gemini 7개 결과를 검증해 재사용합니다. OpenAI 7개만 새로 요청하며, 이번 실행에서 이미 완료된 요청은 건너뜁니다.", flush=True)
         print("[4/5] 등록된 키를 메모리에서만 읽고 합성 사례 7개를 비교합니다. 앱 배포나 설정 변경은 없습니다.", flush=True)
         descriptor = os.open(output / ".lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         with os.fdopen(descriptor, "w") as lock:
@@ -369,7 +406,7 @@ def main(argv: list[str] | None = None) -> int:
             sources.clear()
             try:
                 try:
-                    returncode = run_comparison(repo, output, keys, lock_fd=lock.fileno())
+                    returncode = run_comparison(repo, output, keys, lock_fd=lock.fileno(), baseline=baseline)
                 except KeyboardInterrupt:
                     print("중단했습니다. 저장된 결과는 유지됩니다. 같은 명령을 다시 실행하면 완료된 요청을 건너뜁니다.", flush=True)
                     return 130

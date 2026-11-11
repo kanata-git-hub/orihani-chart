@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { compareCases, prepareCases, promptHash, readComparisonCheckpoint, renderComparisonHtml, writeComparison } from '../scripts/compare-ai.ts';
+import { assertSeparateBaselineOutput, compareCases, prepareCases, promptHash, readComparisonBaseline, readComparisonCheckpoint, renderComparisonHtml, writeComparison } from '../scripts/compare-ai.ts';
+import { CHART_OPENAI_INSTRUCTIONS, FOLLOWUP_OPENAI_INSTRUCTIONS } from '../openaiClinicalInstructions.ts';
 import type { ComparisonCase } from '../scripts/comparisonCases.ts';
 
 const sample: ComparisonCase = { id: 'synthetic', kind: 'chart', title: '합성 <script>bad()</script>', synthetic: true,
@@ -23,6 +24,9 @@ test('comparison calls providers serially with the same unchanged prompt and aud
   assert.equal(seen[0].prompt, sample.prompt);
   assert.deepEqual(seen[0].audioData, item.audioData);
   assert.equal(result[0].promptSha256, promptHash(sample.prompt));
+  assert.equal(result[0].openaiInstructions, CHART_OPENAI_INSTRUCTIONS);
+  assert.equal(result[0].openaiInstructionsSha256, promptHash(CHART_OPENAI_INSTRUCTIONS));
+  assert.equal(result[0].effectivePromptsIdentical, false);
   assert.equal(result[0].runs[0].actualModel, 'gemini-actual');
   assert.equal(result[0].runs[1].audioModel, 'transcription-actual');
   assert.equal(result[0].audio?.bytes, 9);
@@ -73,6 +77,7 @@ test('written report contains full application result but no automatic clinical 
     assert.equal(report.clinicalEquivalence, 'not_established');
     assert.equal(report.cases[0].runs[0].result.chartContent, '원문 결과');
     assert.equal(report.audioComparisonIncluded, false);
+    assert.equal(report.effectivePromptsIdentical, false);
   } finally { await rm(out, { recursive: true, force: true }); }
 });
 
@@ -160,6 +165,9 @@ test('resume rejects changed input identity, non-synthetic results, reversed eng
     (entry: any) => { entry.synthetic = false; },
     (entry: any) => { entry.prompt += ' changed'; },
     (entry: any) => { entry.promptSha256 = 'incorrect'; },
+    (entry: any) => { entry.openaiInstructions += ' stale'; entry.openaiInstructionsSha256 = promptHash(entry.openaiInstructions); },
+    (entry: any) => { delete entry.openaiInstructions; delete entry.openaiInstructionsSha256; },
+    (entry: any) => { entry.openaiInstructionsSha256 = 'incorrect'; },
     (entry: any) => { entry.audio = { mimeType: 'audio/wav', bytes: 1, sha256: 'x' }; },
     (entry: any) => { entry.runs.reverse(); },
   ];
@@ -250,4 +258,138 @@ test('progress contains only the expected event fields and checkpoint failure st
   assert.equal(calls, 1);
   assert.deepEqual(events, [{ index: 1, total: 2, caseId: 'synthetic', engine: 'gemini', status: 'started' }]);
   assert.doesNotMatch(JSON.stringify(events), /private|secret|disk/);
+});
+
+const baselineOutput = (item: ComparisonCase, engine: 'gemini' | 'gpt-astra') => ({
+  ...(item.kind === 'chart' ? { chartContent: `${engine} original chart`, diagnosticGuide: 'guide', matchProbability: '85%',
+    matchReason: 'reason', assessmentDisease: 'diagnosis', treatmentRecommendation: 'recommendation', recommendedTreatmentType: 'type',
+    consultationFeedback: 'no audio', herbsRecipe: [{ 합방_처방: ['synthetic formula'] }] } : { text: `${engine} original followup` }),
+  engine, model: engine === 'gemini' ? 'gemini-3.1-pro-preview' : 'gpt-6-astra',
+  ...(engine === 'gpt-astra' && item.audioData ? { audioModel: 'gpt-transcribe' } : {}),
+});
+
+async function makeOldBaseline(cases: ComparisonCase[]) {
+  const compared = await compareCases(cases, {
+    gemini: async item => baselineOutput(item, 'gemini'),
+    'gpt-astra': async item => baselineOutput(item, 'gpt-astra'),
+  });
+  return { generatedAt: '2026-11-11T02:29:08.960Z', evaluatorCommit: '87dae4f47f6ba551bb02b4d0df4cb7bd86962b34',
+    synthetic: true, reviewStatus: 'pending_manual_review', clinicalEquivalence: 'not_established',
+    audioComparisonIncluded: cases.some(item => item.audioData), cases: compared.map(entry => {
+      const old: any = structuredClone(entry);
+      delete old.openaiInstructions; delete old.openaiInstructionsSha256; delete old.effectivePromptsIdentical;
+      return old;
+    }) };
+}
+
+test('baseline reuse makes exactly seven new Astra calls and preserves Gemini provenance and unchanged fixture prompts', async () => {
+  const cases = await prepareCases(), baseline = await makeOldBaseline(cases);
+  const events: any[] = [], calls: string[] = [];
+  const compared = await compareCases(cases, {
+    gemini: async () => { calls.push('gemini'); throw Error('must not call Gemini'); },
+    'gpt-astra': async item => { calls.push(item.id); return { ...baselineOutput(item, 'gpt-astra'), candidate: true }; },
+  }, { baseline, onProgress: event => { events.push(event); } });
+  assert.deepEqual(calls, cases.map(item => item.id));
+  assert.equal(events.filter(event => event.engine === 'gemini' && event.status === 'reused').length, 7);
+  for (const [index, entry] of compared.entries()) {
+    assert.equal(entry.prompt, cases[index].prompt);
+    assert.deepEqual(entry.runs[0].result, baseline.cases[index].runs[0].result);
+    assert.equal((entry.runs[1].result as any).candidate, true);
+    assert.equal(entry.runs[0].provenance?.generatedAt, baseline.generatedAt);
+    assert.equal(entry.runs[0].provenance?.evaluatorCommit, baseline.evaluatorCommit);
+    assert.equal(entry.openaiInstructionsChangedFromBaseline, true);
+    assert.equal(entry.openaiInstructions, entry.kind === 'chart' ? CHART_OPENAI_INSTRUCTIONS : FOLLOWUP_OPENAI_INSTRUCTIONS);
+  }
+  const html = renderComparisonHtml(compared, '2026-11-11');
+  assert.match(html, /전체 유효 프롬프트는 동일하지 않습니다/);
+  assert.match(html, /기존 Gemini 결과 재사용/);
+  assert.match(html, /87dae4f47f6ba551bb02b4d0df4cb7bd86962b34/);
+  assert.match(html, /기존 비교 대비 OpenAI 추가 지시 변경: 예/);
+  // The current checkpoint is authoritative; the same baseline must never overwrite or repeat new Astra results.
+  const resumed = await compareCases(cases, {
+    gemini: async () => { throw Error('unexpected repeat'); }, 'gpt-astra': async () => { throw Error('unexpected repeat'); },
+  }, { baseline, resume: compared });
+  assert.deepEqual(resumed, compared);
+});
+
+test('baseline validation rejects stale inputs, unsafe shapes, wrong models and incomplete reports before any call or write', async () => {
+  const cases = [sample, { ...sample, id: 'later', kind: 'followup' as const }], baseline = await makeOldBaseline(cases);
+  const corruptions = [
+    (report: any) => { report.synthetic = false; },
+    (report: any) => { report.evaluatorCommit = 'invalid'; },
+    (report: any) => { report.cases.pop(); },
+    (report: any) => { report.cases[1] = report.cases[0]; },
+    (report: any) => { report.cases[1].id = 'other-case'; },
+    (report: any) => { report.cases[1].kind = 'chart'; },
+    (report: any) => { report.cases[1].prompt += ' changed'; report.cases[1].promptSha256 = promptHash(report.cases[1].prompt); },
+    (report: any) => { report.cases[1].promptSha256 = 'stale'; },
+    (report: any) => { report.cases[1].audio = { mimeType: 'audio/wav', sha256: 'a'.repeat(64), bytes: 1 }; },
+    (report: any) => { report.cases[1].runs.reverse(); },
+    (report: any) => { report.cases[1].runs[0].status = 'failed'; },
+    (report: any) => { report.cases[1].runs.pop(); },
+    (report: any) => { report.cases[1].runs[0].actualModel = report.cases[1].runs[0].result.model = 'unexpected-gemini'; },
+    (report: any) => { report.cases[1].runs[1].actualModel = report.cases[1].runs[1].result.model = 'unexpected-astra'; },
+    (report: any) => { report.cases[1].runs[0].result.engine = 'gpt-astra'; },
+    (report: any) => { report.cases[1].runs[0].result.text = { unexpected: true }; },
+    (report: any) => { report.cases[1].runs[0].result.secret = 'not-a-result-field'; },
+    (report: any) => { report.cases[0].runs[0].result.herbsRecipe = [{ 합방_처방: [42] }]; },
+    (report: any) => { report.cases[0].openaiInstructions = 'old instructions'; report.cases[0].openaiInstructionsSha256 = 'wrong'; },
+  ];
+  let calls = 0, writes = 0;
+  const clients = { gemini: async () => { calls++; return {}; }, 'gpt-astra': async () => { calls++; return {}; } };
+  for (const corrupt of corruptions) {
+    const changed = structuredClone(baseline); corrupt(changed);
+    await assert.rejects(compareCases(cases, clients, { baseline: changed, onCheckpoint: () => { writes++; } }), /Invalid comparison baseline/);
+  }
+  await assert.rejects(compareCases([sample], clients, { baseline }), /Invalid comparison baseline/);
+  assert.equal(calls, 0); assert.equal(writes, 0);
+});
+
+test('baseline audio identity is checked and current instruction changes invalidate resume even with a valid baseline', async () => {
+  const item = { ...sample, audioData: { mimeType: 'audio/wav', data: Buffer.from('audio A').toString('base64') } };
+  const baseline = await makeOldBaseline([item]);
+  let calls = 0;
+  const clients = { gemini: async () => { calls++; return {}; }, 'gpt-astra': async value => { calls++; return baselineOutput(value, 'gpt-astra'); } };
+  await assert.rejects(compareCases([{ ...item, audioData: { ...item.audioData, data: Buffer.from('audio B').toString('base64') } }], clients, { baseline }), /Invalid comparison baseline/);
+  assert.equal(calls, 0);
+  const current = await compareCases([item], clients, { baseline });
+  current[0].openaiInstructions += ' stale'; current[0].openaiInstructionsSha256 = promptHash(current[0].openaiInstructions);
+  calls = 0;
+  await assert.rejects(compareCases([item], clients, { baseline, resume: current }), /Invalid comparison checkpoint/);
+  assert.equal(calls, 0);
+});
+
+test('baseline CLI dry run validates the full old report without keys and reports seven Astra-only pending requests', async () => {
+  const out = await mkdtemp(join(tmpdir(), 'ori-baseline-'));
+  try {
+    const baseline = await makeOldBaseline(await prepareCases());
+    const path = join(out, 'baseline.json');
+    await writeFile(path, JSON.stringify(baseline));
+    assert.deepEqual(await readComparisonBaseline(path), baseline);
+    const cli = fileURLToPath(new URL('../scripts/compare-ai.ts', import.meta.url));
+    const env = { ...process.env, OPENAI_API_KEY: '', GEMINI_API_KEY: '' };
+    const dry = spawnSync(process.execPath, ['--experimental-strip-types', cli, '--dry-run', '--baseline', path], { env, encoding: 'utf8' });
+    assert.equal(dry.status, 0, dry.stderr);
+    const manifest = JSON.parse(dry.stdout);
+    assert.deepEqual(manifest.pendingRequests, { gemini: 0, 'gpt-astra': 7 });
+    assert.equal(manifest.effectivePromptsIdentical, false);
+    const subset = spawnSync(process.execPath, ['--experimental-strip-types', cli, '--dry-run', '--baseline', path, '--case', 'chart-mild-pain'], { env, encoding: 'utf8' });
+    assert.equal(subset.status, 2); assert.match(subset.stderr, /Invalid comparison baseline/);
+    await writeFile(path, 'private invalid JSON');
+    await assert.rejects(readComparisonBaseline(path), /Invalid comparison baseline/);
+  } finally { await rm(out, { recursive: true, force: true }); }
+});
+
+test('baseline and output must be separate files, including Windows case aliases', async () => {
+  const out = await mkdtemp(join(tmpdir(), 'ori-baseline-path-'));
+  try {
+    const path = join(out, 'comparison.json');
+    await writeFile(path, 'original baseline');
+    await assert.rejects(assertSeparateBaselineOutput(path, out), /Baseline must be separate/);
+    if (process.platform === 'win32') {
+      await assert.rejects(assertSeparateBaselineOutput(path.toUpperCase(), out.toLowerCase()), /Baseline must be separate/);
+    }
+    await assertSeparateBaselineOutput(path, join(out, 'new-output'));
+    assert.equal(await readFile(path, 'utf8'), 'original baseline');
+  } finally { await rm(out, { recursive: true, force: true }); }
 });

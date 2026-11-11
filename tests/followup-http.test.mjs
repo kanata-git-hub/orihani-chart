@@ -4,8 +4,10 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { createServer } from 'node:net';
 import { once } from 'node:events';
+import { FOLLOWUP_OPENAI_INSTRUCTIONS } from '../openaiClinicalInstructions.ts';
 
 // A separate process runs the real production server. All remote calls are synthetic.
 async function startServer(withKey) {
@@ -22,6 +24,7 @@ async function startServer(withKey) {
       }
       if (target === 'https://api.openai.com/v1/responses') {
         const input = JSON.parse(options.body);
+        assert.equal(input.instructions, ${JSON.stringify(FOLLOWUP_OPENAI_INSTRUCTIONS)});
         assert.equal(input.model, 'gpt-6-astra');
         if (input.input === 'incomplete') return reply({status:'incomplete', output:[]});
         if (input.input === 'rate-limit') return reply({error:'redacted'},429);
@@ -41,7 +44,7 @@ async function startServer(withKey) {
   await once(probe, 'listening');
   const port = probe.address().port;
   await new Promise(resolve => probe.close(resolve));
-  const child = spawn(process.execPath, ['--experimental-strip-types', '--import', preload, 'server.ts'], {
+  const child = spawn(process.execPath, ['--experimental-strip-types', '--import', pathToFileURL(preload).href, 'server.ts'], {
     cwd: new URL('..', import.meta.url), env: { ...process.env, NODE_ENV:'production', PORT:String(port), GEMINI_API_KEY:'fake-gemini', OPENAI_API_KEY:withKey ? 'fake-openai' : '' },
     stdio:['ignore','pipe','pipe'],
   });
@@ -96,3 +99,4 @@ test('missing OpenAI key produces a clear error while Gemini continues working',
     assert.equal(gemini.status,200);
   } finally {await server.close();}
 });
+

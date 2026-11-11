@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, extname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createComparisonCases, SYNTHETIC_AUDIO_SCRIPT } from './comparisonCases.ts';
 import type { ComparisonCase, PromptFactories } from './comparisonCases.ts';
+import { CHART_OPENAI_INSTRUCTIONS, FOLLOWUP_OPENAI_INSTRUCTIONS } from '../openaiClinicalInstructions.ts';
 
 export type ComparisonEngine = 'gemini' | 'gpt-astra';
 export type ComparisonClients = Record<ComparisonEngine, (item: ComparisonCase) => Promise<unknown>>;
@@ -15,6 +16,7 @@ export interface ComparisonRun {
   audioModel?: string;
   result?: unknown;
   error?: { code: string; status?: number };
+  provenance?: { source: 'baseline'; generatedAt: string; evaluatorCommit: string; openaiInstructionsSha256: string | null };
 }
 export interface ComparedCase {
   id: string;
@@ -23,6 +25,10 @@ export interface ComparedCase {
   synthetic: true;
   prompt: string;
   promptSha256: string;
+  openaiInstructions: string;
+  openaiInstructionsSha256: string;
+  effectivePromptsIdentical: false;
+  openaiInstructionsChangedFromBaseline?: boolean;
   reviewPoints: string[];
   audio?: { mimeType: string; sha256: string; bytes: number };
   runs: ComparisonRun[];
@@ -36,6 +42,7 @@ export interface ComparisonProgress {
 }
 export interface ComparisonOptions {
   resume?: unknown;
+  baseline?: unknown;
   onProgress?: (event: ComparisonProgress) => void | Promise<void>;
   onCheckpoint?: (cases: ComparedCase[]) => void | Promise<void>;
 }
@@ -70,6 +77,82 @@ function safeFailure(error: unknown): ComparisonRun['error'] {
 const ENGINES = ['gemini', 'gpt-astra'] as const;
 const isRecord = (value: unknown): value is Record<string, any> => !!value && typeof value === 'object' && !Array.isArray(value);
 const invalidCheckpoint = () => Error('Invalid comparison checkpoint. Inputs or saved results differ; no existing results were replaced. No request was sent.');
+const invalidBaseline = () => Error('Invalid comparison baseline. A complete matching synthetic report is required. No request was sent.');
+const instructionFor = (kind: ComparisonCase['kind']) => kind === 'chart' ? CHART_OPENAI_INSTRUCTIONS : FOLLOWUP_OPENAI_INSTRUCTIONS;
+const validHash = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+const PROVENANCE_KEYS = ['source', 'generatedAt', 'evaluatorCommit', 'openaiInstructionsSha256'] as const;
+const validProvenance = (value: unknown): value is NonNullable<ComparisonRun['provenance']> => isRecord(value) &&
+  Object.keys(value).every(key => (PROVENANCE_KEYS as readonly string[]).includes(key)) &&
+  value.source === 'baseline' && typeof value.generatedAt === 'string' && Number.isFinite(Date.parse(value.generatedAt)) &&
+  typeof value.evaluatorCommit === 'string' && /^[a-f0-9]{40}$/.test(value.evaluatorCommit) &&
+  (value.openaiInstructionsSha256 === null || validHash(value.openaiInstructionsSha256));
+
+function sameCaseInput(entry: ComparedCase, previous: unknown): boolean {
+  if (!isRecord(previous) || previous.synthetic !== true || previous.kind !== entry.kind || previous.id !== entry.id ||
+    previous.prompt !== entry.prompt || previous.promptSha256 !== entry.promptSha256 ||
+    promptHash(previous.prompt) !== previous.promptSha256) return false;
+  return entry.audio ? isRecord(previous.audio) && previous.audio.sha256 === entry.audio.sha256 &&
+    previous.audio.mimeType === entry.audio.mimeType && previous.audio.bytes === entry.audio.bytes : previous.audio === undefined;
+}
+
+function validateCaseSet(entries: ComparedCase[], saved: unknown, invalid: () => Error, allowEmpty: boolean): asserts saved is Record<string, any>[] {
+  if (!Array.isArray(saved)) throw invalid();
+  if (allowEmpty && saved.length === 0) return;
+  const ids = new Set(entries.map(item => item.id)), savedIds = new Set(saved.map(item => isRecord(item) ? item.id : undefined));
+  if (ids.size !== entries.length || savedIds.size !== saved.length || saved.length !== entries.length ||
+    [...savedIds].some(id => typeof id !== 'string' || !ids.has(id))) throw invalid();
+}
+
+// Validate transport shape, not clinical quality. Preserve known baseline defects such as a missing optional modifier list.
+function safeBaselineResult(result: unknown, kind: ComparisonCase['kind']): boolean {
+  if (!isRecord(result)) return false;
+  const metadata = ['engine', 'model', 'audioModel'];
+  if (kind === 'followup') return typeof result.text === 'string' && !!result.text.trim() &&
+    Object.keys(result).every(key => [...metadata, 'text'].includes(key));
+  const fields = ['chartContent', 'diagnosticGuide', 'matchProbability', 'matchReason', 'assessmentDisease',
+    'treatmentRecommendation', 'recommendedTreatmentType', 'consultationFeedback'];
+  if (fields.some(key => typeof result[key] !== 'string') || !result.chartContent.trim() ||
+    Object.keys(result).some(key => ![...metadata, ...fields, 'herbsRecipe'].includes(key)) || !Array.isArray(result.herbsRecipe)) return false;
+  return result.herbsRecipe.every((recipe: unknown) => isRecord(recipe) &&
+    Object.keys(recipe).every(key => ['합방_처방', '가감_목록'].includes(key)) && Array.isArray(recipe.합방_처방) &&
+    recipe.합방_처방.every((name: unknown) => typeof name === 'string' && !!name.trim()) &&
+    (recipe.가감_목록 === undefined || Array.isArray(recipe.가감_목록) && recipe.가감_목록.every((modifier: unknown) => isRecord(modifier) &&
+      Object.keys(modifier).every(key => ['약재명', '동작', '용량_g', '남길_비율'].includes(key)) &&
+      typeof modifier.약재명 === 'string' && !!modifier.약재명.trim() && ['가', '감'].includes(modifier.동작) &&
+      [modifier.용량_g, modifier.남길_비율].every(number => number === undefined || number === null || typeof number === 'number' && Number.isFinite(number) && number >= 0) &&
+      (modifier.남길_비율 == null || modifier.남길_비율 <= 1))));
+}
+
+function importBaseline(entries: ComparedCase[], raw: unknown): ComparisonRun[] {
+  if (!isRecord(raw) || raw.synthetic !== true || raw.reviewStatus !== 'pending_manual_review' ||
+    raw.clinicalEquivalence !== 'not_established' || typeof raw.generatedAt !== 'string' || !Number.isFinite(Date.parse(raw.generatedAt)) ||
+    typeof raw.evaluatorCommit !== 'string' || !/^[a-f0-9]{40}$/.test(raw.evaluatorCommit) ||
+    raw.audioComparisonIncluded !== entries.some(entry => entry.audio)) throw invalidBaseline();
+  validateCaseSet(entries, raw.cases, invalidBaseline, false);
+  return entries.map(entry => {
+    const previous = raw.cases.find((value: any) => value.id === entry.id);
+    if (!sameCaseInput(entry, previous) || !Array.isArray(previous.runs) || previous.runs.length !== 2 ||
+      typeof previous.title !== 'string' || !Array.isArray(previous.reviewPoints) || previous.reviewPoints.some((point: unknown) => typeof point !== 'string')) throw invalidBaseline();
+    if (previous.openaiInstructions !== undefined || previous.openaiInstructionsSha256 !== undefined) {
+      if (typeof previous.openaiInstructions !== 'string' || !validHash(previous.openaiInstructionsSha256) ||
+        promptHash(previous.openaiInstructions) !== previous.openaiInstructionsSha256) throw invalidBaseline();
+    }
+    const geminiModels = entry.kind === 'chart' ? ['gemini-3.1-pro-preview', 'gemini-3.6-flash', 'gemini-3.5-flash-lite'] : ['gemini-3.1-pro-preview', 'gemini-3.6-flash'];
+    for (const [index, run] of previous.runs.entries()) {
+      const engine = ENGINES[index], models = engine === 'gemini' ? geminiModels : ['gpt-6-astra'];
+      if (!isRecord(run) || run.engine !== engine || run.status !== 'completed' || !Number.isFinite(run.durationMs) || run.durationMs < 0 ||
+        !models.includes(run.actualModel) || !safeBaselineResult(run.result, entry.kind) || run.result.engine !== engine || run.result.model !== run.actualModel ||
+        (engine === 'gpt-astra' && entry.audio ? run.audioModel !== 'gpt-transcribe' || run.result.audioModel !== 'gpt-transcribe' :
+          run.audioModel !== undefined || run.result.audioModel !== undefined) || run.provenance !== undefined && (engine !== 'gemini' || !validProvenance(run.provenance))) throw invalidBaseline();
+    }
+    const run = previous.runs[0];
+    return { engine: 'gemini', status: 'completed', durationMs: run.durationMs, actualModel: run.actualModel,
+      result: structuredClone(run.result), provenance: run.provenance ? structuredClone(run.provenance) : {
+        source: 'baseline', generatedAt: raw.generatedAt, evaluatorCommit: raw.evaluatorCommit,
+        openaiInstructionsSha256: previous.openaiInstructionsSha256 ?? null,
+      } };
+  });
+}
 
 function restoredRuns(entry: ComparedCase, resume: unknown): ComparisonRun[] {
   if (resume === undefined || Array.isArray(resume) && resume.length === 0) return [];
@@ -77,38 +160,27 @@ function restoredRuns(entry: ComparedCase, resume: unknown): ComparisonRun[] {
   const matches = resume.filter(previous => isRecord(previous) && previous.id === entry.id);
   if (matches.length !== 1) throw invalidCheckpoint();
   const previous = matches[0];
-  if (previous.synthetic !== true || previous.kind !== entry.kind || previous.prompt !== entry.prompt ||
-    previous.promptSha256 !== entry.promptSha256 || promptHash(previous.prompt) !== previous.promptSha256 ||
+  if (!sameCaseInput(entry, previous) || previous.openaiInstructions !== entry.openaiInstructions ||
+    previous.openaiInstructionsSha256 !== entry.openaiInstructionsSha256 || previous.effectivePromptsIdentical !== false ||
     !Array.isArray(previous.runs) || previous.runs.length > ENGINES.length ||
     previous.runs.some((run: unknown, index: number) => !isRecord(run) || run.engine !== ENGINES[index] || !['completed', 'failed'].includes(run.status))) throw invalidCheckpoint();
-  if (entry.audio) {
-    if (!isRecord(previous.audio) || previous.audio.sha256 !== entry.audio.sha256 || previous.audio.mimeType !== entry.audio.mimeType || previous.audio.bytes !== entry.audio.bytes) throw invalidCheckpoint();
-  } else if (previous.audio !== undefined) throw invalidCheckpoint();
   return previous.runs.map((run: any, index: number) => {
     const result = run.result;
     const valid = run.status === 'completed' && Number.isFinite(run.durationMs) && run.durationMs >= 0 &&
       typeof run.actualModel === 'string' && !!run.actualModel.trim() && isRecord(result) &&
       result.engine === ENGINES[index] && result.model === run.actualModel &&
       (run.audioModel === undefined ? result.audioModel === undefined : typeof run.audioModel === 'string' && !!run.audioModel.trim() && result.audioModel === run.audioModel);
+    if (run.provenance !== undefined && (index !== 0 || !validProvenance(run.provenance))) throw invalidCheckpoint();
     if (valid) return { engine: ENGINES[index], status: 'completed', durationMs: run.durationMs, actualModel: run.actualModel,
-      ...(run.audioModel ? { audioModel: run.audioModel } : {}), result: structuredClone(result) } as ComparisonRun;
+      ...(run.audioModel ? { audioModel: run.audioModel } : {}), ...(run.provenance ? { provenance: structuredClone(run.provenance) } : {}),
+      result: structuredClone(result) } as ComparisonRun;
     if (run.status !== 'failed' || !Number.isFinite(run.durationMs) || run.durationMs < 0) throw invalidCheckpoint();
     // Keep failed slots so an independently completed later engine remains available; only failed/missing slots retry.
     return { engine: ENGINES[index], status: 'failed', durationMs: 0, error: { code: 'INVALID_AI_RESPONSE' } } as ComparisonRun;
   });
 }
 
-/** Serial calls use identical input. Each settled request is checkpointed before proceeding. */
-export async function compareCases(cases: ComparisonCase[], clients: ComparisonClients, options: ComparisonOptions = {}): Promise<ComparedCase[]> {
-  if (options.resume !== undefined) {
-    if (!Array.isArray(options.resume)) throw invalidCheckpoint();
-    if (options.resume.length) {
-      const ids = new Set(cases.map(item => item.id));
-      const savedIds = new Set(options.resume.map(item => isRecord(item) ? item.id : undefined));
-      if (ids.size !== cases.length || savedIds.size !== options.resume.length || options.resume.length !== cases.length ||
-        [...savedIds].some(id => typeof id !== 'string' || !ids.has(id))) throw invalidCheckpoint();
-    }
-  }
+function prepareComparison(cases: ComparisonCase[], options: ComparisonOptions) {
   const items = cases.map(source => {
     if (source.synthetic !== true) throw Error('Only synthetic evaluation cases are accepted.');
     const audioData = source.audioData ? Object.freeze({ ...source.audioData }) : undefined;
@@ -116,14 +188,36 @@ export async function compareCases(cases: ComparisonCase[], clients: ComparisonC
   });
   const compared = items.map(item => {
     const entry: ComparedCase = { id: item.id, title: item.title, kind: item.kind, synthetic: true, prompt: item.prompt,
-      promptSha256: promptHash(item.prompt), reviewPoints: [...item.reviewPoints], runs: [] };
+      promptSha256: promptHash(item.prompt), openaiInstructions: instructionFor(item.kind),
+      openaiInstructionsSha256: promptHash(instructionFor(item.kind)), effectivePromptsIdentical: false,
+      reviewPoints: [...item.reviewPoints], runs: [] };
     if (item.audioData) {
       const bytes = Buffer.from(item.audioData.data, 'base64');
       entry.audio = { mimeType: item.audioData.mimeType, sha256: createHash('sha256').update(bytes).digest('hex'), bytes: bytes.length };
     }
-    entry.runs = restoredRuns(entry, options.resume);
     return entry;
   });
+  if (options.resume !== undefined) validateCaseSet(compared, options.resume, invalidCheckpoint, true);
+  const baseline = options.baseline === undefined ? undefined : importBaseline(compared, options.baseline);
+  for (const [index, entry] of compared.entries()) {
+    entry.runs = restoredRuns(entry, options.resume);
+    if (baseline) {
+      const existing = entry.runs[0], imported = baseline[index];
+      if (existing?.status === 'completed' && (existing.durationMs !== imported.durationMs || existing.actualModel !== imported.actualModel ||
+        JSON.stringify(existing.result) !== JSON.stringify(imported.result) || !existing.provenance ||
+        PROVENANCE_KEYS.some(key => existing.provenance![key] !== imported.provenance![key]))) throw invalidCheckpoint();
+      entry.runs[0] = baseline[index];
+    }
+    const provenance = entry.runs[0]?.provenance;
+    if (provenance) entry.openaiInstructionsChangedFromBaseline = provenance.openaiInstructionsSha256 !== entry.openaiInstructionsSha256;
+  }
+  return { items, compared };
+}
+
+/** Application prompts stay identical; OpenAI's additional instructions are separately fingerprinted. */
+export async function compareCases(cases: ComparisonCase[], clients: ComparisonClients, options: ComparisonOptions = {}): Promise<ComparedCase[]> {
+  // Validate every baseline/checkpoint case before any paid call or replacement write.
+  const { items, compared } = prepareComparison(cases, options);
   for (let caseIndex = 0; caseIndex < items.length; caseIndex++) {
     const item = items[caseIndex], entry = compared[caseIndex];
     for (const [engineIndex, engine] of ENGINES.entries()) {
@@ -155,8 +249,10 @@ export async function compareCases(cases: ComparisonCase[], clients: ComparisonC
 
 export function renderComparisonHtml(cases: ComparedCase[], generatedAt: string): string {
   const sections = cases.map(item => `<section><h2>${escapeHtml(item.title)}</h2><p><code>${escapeHtml(item.id)}</code> · prompt SHA-256: <code>${escapeHtml(item.promptSha256)}</code></p>
+<p>공통 앱 프롬프트는 동일하지만 OpenAI 추가 지시가 있어 전체 유효 프롬프트는 동일하지 않습니다. OpenAI instructions SHA-256: <code>${escapeHtml(item.openaiInstructionsSha256)}</code>${item.openaiInstructionsChangedFromBaseline !== undefined ? ` · 기존 비교 대비 OpenAI 추가 지시 변경: ${item.openaiInstructionsChangedFromBaseline ? '예' : '아니요'}` : ''}</p>
 <ul>${item.reviewPoints.map(point => `<li>${escapeHtml(point)}</li>`).join('')}</ul>
-<div class="columns">${item.runs.map(run => `<article><h3>${escapeHtml(run.engine)}</h3><p>${escapeHtml(run.status)} · ${run.durationMs} ms · ${escapeHtml(run.actualModel ?? '모델 미확인')}${run.audioModel ? ` · 음성: ${escapeHtml(run.audioModel)}` : ''}</p><pre>${escapeHtml(JSON.stringify(run.status === 'completed' ? run.result : run.error, null, 2))}</pre></article>`).join('')}</div>
+<div class="columns">${item.runs.map(run => `<article><h3>${escapeHtml(run.engine)}</h3><p>${escapeHtml(run.status)} · ${run.durationMs} ms · ${escapeHtml(run.actualModel ?? '모델 미확인')}${run.audioModel ? ` · 음성: ${escapeHtml(run.audioModel)}` : ''}</p>${run.provenance ? `<p>기존 Gemini 결과 재사용 · 원본 생성: ${escapeHtml(run.provenance.generatedAt)} · 원본 evaluator: <code>${escapeHtml(run.provenance.evaluatorCommit)}</code></p>` : ''}<pre>${escapeHtml(JSON.stringify(run.status === 'completed' ? run.result : run.error, null, 2))}</pre></article>`).join('')}</div>
+<details><summary>OpenAI에만 적용한 추가 지시</summary><pre>${escapeHtml(item.openaiInstructions)}</pre></details>
 <details><summary>동일한 원문 프롬프트</summary><pre>${escapeHtml(item.prompt)}</pre></details></section>`).join('\n');
   return `<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>오리차트 AI 결과 비교</title>
 <style>body{font:16px/1.6 system-ui,sans-serif;margin:28px;color:#28221d;background:#faf8f3}main{max-width:1600px;margin:auto}h1,h2{line-height:1.3}section{margin:28px 0;padding:24px;background:#fff;border:1px solid #d8d0c5;border-radius:10px}.columns{display:grid;grid-template-columns:1fr 1fr;gap:18px}article{min-width:0;background:#f4f1eb;padding:16px}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.65 ui-monospace,monospace}code{overflow-wrap:anywhere}table{width:100%;border-collapse:collapse}td,th{text-align:left;vertical-align:top;padding:10px;border:1px solid #d8d0c5}.pending{padding:18px;background:#fff0cb;border:1px solid #be9952}@media(max-width:800px){.columns{grid-template-columns:1fr}body{margin:12px}section{padding:14px}}</style>
@@ -179,6 +275,7 @@ export async function writeComparison(cases: ComparedCase[], outDir: string): Pr
   // JSON is the resume authority. Commit it last; HTML can be regenerated after interruption.
   await atomicWrite(htmlPath, renderComparisonHtml(cases, generatedAt));
   await atomicWrite(jsonPath, JSON.stringify({ generatedAt, synthetic: true, reviewStatus: 'pending_manual_review', clinicalEquivalence: 'not_established',
+    effectivePromptsIdentical: false, comparisonMode: cases.some(item => item.runs.some(run => run.provenance)) ? 'candidate_with_reused_gemini_baseline' : 'both_providers',
     evaluatorCommit: process.env.ORI_COMPARISON_COMMIT || null, audioComparisonIncluded: cases.some(item => item.audio), cases }, null, 2) + '\n');
   return { jsonPath, htmlPath };
 }
@@ -197,8 +294,29 @@ export async function readComparisonCheckpoint(outDir: string, expectedCommit = 
   if (!isRecord(raw) || raw.synthetic !== true || raw.reviewStatus !== 'pending_manual_review' || !Array.isArray(raw.cases)) {
     throw Error('Invalid comparison checkpoint. No request was sent.');
   }
-  if (expectedCommit && raw.evaluatorCommit !== expectedCommit) throw Error('Comparison checkpoint version differs. Use the matching evaluator or a new output directory. No request was sent.');
+  if (raw.evaluatorCommit !== (expectedCommit || null)) throw Error('Comparison checkpoint version differs. Use the matching evaluator or a new output directory. No request was sent.');
   return raw.cases;
+}
+
+export async function readComparisonBaseline(path: string): Promise<unknown> {
+  try {
+    const info = await stat(path);
+    if (!info.isFile() || info.size > 25_000_000) throw invalidBaseline();
+    return JSON.parse(await readFile(path, 'utf8'));
+  } catch { throw invalidBaseline(); }
+}
+
+export async function assertSeparateBaselineOutput(baselinePath: string, outDir: string): Promise<void> {
+  const outputPath = resolve(outDir, 'comparison.json');
+  const canonical = (path: string) => process.platform === 'win32' ? path.toLowerCase() : path;
+  const conflict = () => Error('Baseline must be separate from the current output report. No request was sent.');
+  if (canonical(resolve(baselinePath)) === canonical(outputPath)) throw conflict();
+  let existingOutput;
+  try { existingOutput = await stat(outputPath); }
+  catch (error) { if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return; throw error; }
+  const [baselineInfo, baselineReal, outputReal] = await Promise.all([stat(baselinePath), realpath(baselinePath), realpath(outputPath)]);
+  if (canonical(baselineReal) === canonical(outputReal) || baselineInfo.ino !== 0 &&
+    baselineInfo.ino === existingOutput.ino && baselineInfo.dev === existingOutput.dev) throw conflict();
 }
 
 export async function prepareCases(audioData?: ComparisonCase['audioData']): Promise<ComparisonCase[]> {
@@ -213,12 +331,12 @@ async function main(args: string[]) {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (['--dry-run', '--help', '--resume', '--confirm-synthetic-audio', '--print-audio-script'].includes(arg)) flags.add(arg);
-    else if (['--out', '--case', '--audio', '--audio-mime'].includes(arg)) {
+    else if (['--out', '--case', '--audio', '--audio-mime', '--baseline'].includes(arg)) {
       if (!args[i + 1] || args[i + 1].startsWith('--')) throw Error('Missing option value.');
       if (arg === '--case') caseIds.push(args[++i]); else values[arg] = args[++i];
     } else throw Error('Unknown option. Use --help.');
   }
-  if (flags.has('--help')) { console.log('node --experimental-strip-types scripts/compare-ai.ts [--dry-run] [--case ID] [--out DIR] [--resume --out DIR] [--audio FILE --confirm-synthetic-audio] [--audio-mime MIME] [--print-audio-script]'); return; }
+  if (flags.has('--help')) { console.log('node --experimental-strip-types scripts/compare-ai.ts [--dry-run] [--case ID] [--out DIR] [--resume --out DIR] [--baseline COMPLETE_SYNTHETIC_REPORT.json] [--audio FILE --confirm-synthetic-audio] [--audio-mime MIME] [--print-audio-script]'); return; }
   if (flags.has('--print-audio-script')) { console.log(SYNTHETIC_AUDIO_SCRIPT); return; }
   let audioData: ComparisonCase['audioData'];
   if (values['--audio']) {
@@ -241,18 +359,24 @@ async function main(args: string[]) {
   const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   const outDir = resolve(values['--out'] || resolve(repo, 'generated/ai-comparison', stamp));
   const resume = flags.has('--resume') ? await readComparisonCheckpoint(outDir) : undefined;
+  const baseline = values['--baseline'] ? await readComparisonBaseline(resolve(values['--baseline'])) : undefined;
+  if (values['--baseline']) await assertSeparateBaselineOutput(resolve(values['--baseline']), outDir);
+  const prepared = prepareComparison(cases, { resume, baseline });
   if (flags.has('--dry-run')) {
     console.log(JSON.stringify({ mode: 'dry-run', paidCalls: 0, synthetic: true, audioComparisonIncluded: cases.some(item => item.audioData),
-      cases: cases.map(({ id, kind, title, prompt }) => ({ id, kind, title, promptSha256: promptHash(prompt), promptCharacters: prompt.length })) }, null, 2));
+      baselineIncluded: baseline !== undefined, effectivePromptsIdentical: false,
+      pendingRequests: Object.fromEntries(ENGINES.map((engine, index) => [engine, prepared.compared.filter(item => item.runs[index]?.status !== 'completed').length])),
+      cases: prepared.compared.map(({ id, kind, title, prompt, promptSha256, openaiInstructionsSha256 }) => ({ id, kind, title, promptSha256, promptCharacters: prompt.length, openaiInstructionsSha256 })) }, null, 2));
     return;
   }
-  if (!process.env.OPENAI_API_KEY?.trim() || !process.env.GEMINI_API_KEY?.trim()) throw Error('Both OPENAI_API_KEY and GEMINI_API_KEY must be configured in the process environment. No request was sent.');
+  if (prepared.compared.some(item => item.runs[1]?.status !== 'completed') && !process.env.OPENAI_API_KEY?.trim() ||
+    prepared.compared.some(item => item.runs[0]?.status !== 'completed') && !process.env.GEMINI_API_KEY?.trim()) throw Error('Required provider credentials are missing from the process environment. No request was sent.');
   const [{ generateChartResponse }, { generateFollowUpResponse }] = await Promise.all([import('../chartEngine.ts'), import('../followUpEngine.ts')]);
   const client = (engine: ComparisonEngine) => (item: ComparisonCase) => item.kind === 'chart'
     ? generateChartResponse(item.prompt, item.audioData, engine)
     : generateFollowUpResponse(item.prompt, engine);
   const compared = await compareCases(cases, { gemini: client('gemini'), 'gpt-astra': client('gpt-astra') }, {
-    resume,
+    resume, baseline,
     onProgress: event => { console.log(`ORI_PROGRESS ${JSON.stringify(event)}`); },
     onCheckpoint: entries => writeComparison(entries, outDir).then(() => undefined),
   });
@@ -265,7 +389,7 @@ async function main(args: string[]) {
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   main(process.argv.slice(2)).catch(error => {
     // Only locally produced setup errors are readable; arbitrary request errors are masked inside compareCases.
-    const allowed = /^(Missing option value|Unknown option|Audio must be recorded|Audio MIME type|Synthetic audio must|--audio is required|--resume requires|Unknown or unavailable case|Both OPENAI_API_KEY|Invalid comparison checkpoint|Comparison checkpoint version differs)/;
+    const allowed = /^(Missing option value|Unknown option|Audio must be recorded|Audio MIME type|Synthetic audio must|--audio is required|--resume requires|Unknown or unavailable case|Required provider credentials|Invalid comparison checkpoint|Comparison checkpoint version differs|Invalid comparison baseline|Baseline must be separate)/;
     console.error(allowed.test(error?.message || '') ? error.message : 'Comparison setup failed. Check dependencies, synthetic input file and output directory. No secret details are logged.');
     process.exitCode = 2;
   });

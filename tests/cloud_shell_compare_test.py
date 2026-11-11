@@ -144,8 +144,9 @@ class CloudShellCompareTests(unittest.TestCase):
             if command == ["git", "rev-parse", "HEAD"]:
                 return runner.PINNED_COMMIT
             return ""
-        def interrupted(repo, output, keys, *, lock_fd=None):
+        def interrupted(repo, output, keys, *, lock_fd=None, baseline=None):
             self.assertIsInstance(lock_fd, int)
+            self.assertIsNone(baseline)
             (output / "comparison.json").write_text('{"saved":true}')
             raise KeyboardInterrupt()
         with tempfile.TemporaryDirectory() as temporary, patch.object(runner.Path, "home", return_value=Path(temporary)), \
@@ -157,6 +158,90 @@ class CloudShellCompareTests(unittest.TestCase):
             self.assertEqual((output / "comparison.json").read_text(), '{"saved":true}')
             self.assertIn("저장된 결과는 유지", stdout.getvalue())
             self.assertFalse(list(Path(temporary).glob("*.zip")))
+
+    def test_existing_baseline_is_selected_without_modification(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(runner.Path, "home", return_value=Path(temporary)):
+            directory = Path(temporary) / "orihani-ai-comparison" / "fixture-project" / "asia-northeast3" / runner.GEMINI_BASELINE_COMMIT
+            directory.mkdir(parents=True)
+            report = directory / "comparison.json"
+            report.write_text('{"original":true}', encoding="utf-8")
+            self.assertEqual(runner.existing_gemini_baseline("fixture-project", "asia-northeast3"), report)
+            self.assertEqual(report.read_text(encoding="utf-8"), '{"original":true}')
+            self.assertEqual(list(directory.iterdir()), [report])
+
+    def test_missing_or_invalid_baseline_never_creates_fresh_output(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(runner.Path, "home", return_value=Path(temporary)):
+            for project, region in (("fixture-project", "asia-northeast3"), ("../other", "asia-northeast3"), ("fixture-project", "../other")):
+                with self.subTest(project=project, region=region), self.assertRaises(runner.SetupError):
+                    runner.existing_gemini_baseline(project, region)
+            self.assertEqual(list(Path(temporary).iterdir()), [])
+
+    def test_baseline_symlink_report_and_ancestor_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(runner.Path, "home", return_value=Path(temporary)):
+            directory = Path(temporary) / "orihani-ai-comparison" / "fixture-project" / "asia-northeast3" / runner.GEMINI_BASELINE_COMMIT
+            directory.mkdir(parents=True)
+            target = Path(temporary) / "source.json"
+            target.write_text("{}", encoding="utf-8")
+            report = directory / "comparison.json"
+            report.symlink_to(target)
+            with self.assertRaises(runner.SetupError):
+                runner.existing_gemini_baseline("fixture-project", "asia-northeast3")
+            report.unlink()
+            directory.rmdir()
+            directory.symlink_to(Path(temporary), target_is_directory=True)
+            with self.assertRaises(runner.SetupError):
+                runner.existing_gemini_baseline("fixture-project", "asia-northeast3")
+
+    def test_candidate_child_receives_baseline_path_as_separate_argument(self):
+        child = Mock(returncode=0)
+        child.communicate.return_value = (b"", b"")
+        child.poll.return_value = 0
+        baseline = Path("/old reports/comparison.json")
+        keys = {"OPENAI_API_KEY": "FAKE-OPENAI", "GEMINI_API_KEY": "FAKE-GEMINI"}
+        with patch.object(runner.subprocess, "Popen", return_value=child) as launch:
+            self.assertEqual(runner.run_comparison(Path("/repo"), Path("/new"), keys, baseline=baseline), 0)
+        command = launch.call_args.args[0]
+        self.assertEqual(command[-2:], ["--baseline", str(baseline)])
+        self.assertEqual(command.count("--baseline"), 1)
+        self.assertNotIn("FAKE-OPENAI", " ".join(command))
+        self.assertTrue(launch.call_args.kwargs["start_new_session"])
+
+    def test_missing_baseline_stops_before_service_details_or_key_reads(self):
+        commands = []
+        def capture(command, **kwargs):
+            commands.append(command)
+            if command[:2] == ["node", "--version"]:
+                return "v22.16.0"
+            if command[:4] == ["gcloud", "config", "get-value", "project"]:
+                return "fixture-project"
+            if command[:4] == ["gcloud", "run", "services", "list"]:
+                return json.dumps([{"metadata": {"name": "orihani-chart", "labels": {"cloud.googleapis.com/location": "asia-northeast3"}}}])
+            raise AssertionError("Unexpected command after missing baseline")
+        with tempfile.TemporaryDirectory() as temporary, patch.object(runner.Path, "home", return_value=Path(temporary)), \
+                patch.object(runner.shutil, "which", return_value="/fake/tool"), \
+                patch.object(runner, "captured", side_effect=capture), \
+                patch.object(runner, "resolve_keys", side_effect=AssertionError("Unexpected key read")), \
+                patch.object(runner, "run_comparison", side_effect=AssertionError("Unexpected model request")), \
+                contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(runner.SetupError):
+                runner.main(["--reuse-gemini"])
+        self.assertEqual(len(commands), 3)
+
+    def test_reuse_gemini_dry_run_does_not_access_baseline_or_cloud(self):
+        def capture(command, **kwargs):
+            self.assertNotEqual(command[0], "gcloud")
+            if command[:2] == ["node", "--version"]:
+                return "v22.16.0"
+            if command == ["git", "rev-parse", "HEAD"]:
+                return runner.PINNED_COMMIT
+            return ""
+        with patch.object(runner.shutil, "which", return_value="/fake/tool"), \
+                patch.object(runner, "captured", side_effect=capture), \
+                patch.object(runner, "existing_gemini_baseline", side_effect=AssertionError("Unexpected baseline lookup")), \
+                patch.object(runner, "resolve_keys", side_effect=AssertionError("Unexpected key read")), \
+                patch.object(runner, "run_comparison", side_effect=AssertionError("Unexpected model request")), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(runner.main(["--dry-run", "--reuse-gemini"]), 0)
 
     def test_node_inherits_lock_even_if_parent_handle_closes(self):
         with tempfile.TemporaryDirectory() as temporary:

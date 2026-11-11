@@ -2,7 +2,7 @@
 
 이 도구는 **한 앱의 실제 결과 비교**를 위한 개발 도구입니다. 기본 입력 7개는 모두 새로 만든 합성 사례이며 환자 시트·브라우저 저장소·기존 진료 기록을 읽지 않습니다. 실제 API 요청은 명시적으로 live 명령을 실행할 때만 발생합니다.
 
-`src/services/prompts.ts`의 기존 함수를 직접 불러와 한 번 만든 프롬프트를 두 엔진에 **동일한 문자열**로 전달합니다. 재평가는 `generateFollowUpResponse`, 초진은 `generateChartResponse`를 호출합니다. Gemini 다음 Astra 순서로 한 요청씩 실행합니다. 실제 fallback 모델은 반환된 `model`로 확인합니다.
+`src/services/prompts.ts`의 기존 함수를 직접 불러와 한 번 만든 프롬프트를 두 엔진에 **동일한 문자열**로 전달합니다. OpenAI에는 별도의 원내 조제·문체 지시도 전달하며, 보고서에 그 원문과 SHA-256을 기록합니다. 따라서 두 공급자의 전체 유효 프롬프트가 같다고 표시하지 않습니다. 재평가는 `generateFollowUpResponse`, 초진은 `generateChartResponse`를 호출합니다. Gemini 다음 Astra 순서로 한 요청씩 실행합니다. 실제 fallback 모델은 반환된 `model`로 확인합니다.
 
 ## 유료 호출 없이 점검
 
@@ -74,3 +74,27 @@ HTML에는 8개 검토 항목이 있으며 모두 **검토 대기**로 시작합
 입력 사실·함량·논문을 지어내거나, 확인된 알레르기를 무시하거나, 치료 제한을 위반하거나, 본문/JSON 처방이 다르거나, 음성의 중요한 정보를 오인하거나, 출력이 미완료이면 전환 판단을 보류합니다. 차트와 재평가의 외부 약재 계산·화면 표시·저장 동작은 별도 통합 테스트와 실제 화면에서도 확인해야 합니다. 이 도구는 Apps Script나 환자 시트 후처리를 실행하지 않습니다.
 
 API 호출 성공·mock 테스트 통과·7개 합성 사례만으로 임상적 동등성이나 우월성을 입증할 수 없습니다. 보고서는 `clinicalEquivalence: not_established`를 유지하며 운영 기본값이나 Cloud Run 설정을 변경하지 않습니다. 실제 비교 결과를 원장님이 검토한 뒤 전환 여부를 결정합니다.
+
+
+## 2026-11-11 결과와 OpenAI 재비교
+
+첫 실측은 7건 × 두 엔진, 14개 요청 모두 완료됐으나 어조와 조제 설정 해석이 달라 운영 전환을 보류했습니다. 상세 비교는 [실측 검토](ai-comparison-review-2026-11-11.md)에 기록했습니다. 모델 API 완료와 임상 동등성은 별개의 판정입니다.
+
+보완본은 원문 프롬프트를 유지하며 OpenAI 요청의 instructions에 원장 대상 문체, 원내 조제 합방과 중복 약재 MAX 처리, 실제 환자별 사유를 앞세운 간결한 권고를 명시합니다. 중요한 금기·누락 사실과 관찰/유지 선택도 보존합니다. 진단·효과 확률을 계산할 근거가 없으면 숫자를 만들지 않으므로 백분율 전용 화면 계약은 아직 검토 대상입니다.
+
+기존 Cloud Shell 결과가 남아 있으면 다음 실행은 Gemini 결과를 다시 호출하지 않습니다.
+
+```sh
+python3 scripts/cloud-shell-compare.py --reuse-gemini
+```
+
+스크립트는 기존 프로젝트·리전의 첫 평가 커밋 `87dae4f47f6ba551bb02b4d0df4cb7bd86962b34` 아래 `comparison.json`을 찾습니다. 파일이 없거나 경로가 심볼릭 링크이면 중단하며 전체 14건 재실행으로 바꾸지 않습니다. 전체 사례·입력·오디오·원문 해시·실제 모델·결과 구조를 검증한 뒤 기존 Gemini 7개 결과만 재사용하고 새 OpenAI 7건을 요청합니다. 원래 시각과 평가 커밋은 provenance로 남기며 기존 파일은 덮어쓰지 않습니다. 같은 새 명령을 다시 실행하면 새 OpenAI의 완료 결과도 이어받습니다.
+
+직접 실행할 때는 다음과 같이 원본 보고서를 지정할 수 있습니다. dry-run은 유료 요청 없이 재사용 가능 여부와 남은 요청 수를 확인합니다.
+
+```sh
+node --experimental-strip-types scripts/compare-ai.ts --baseline /path/to/comparison.json --dry-run
+node --experimental-strip-types scripts/compare-ai.ts --baseline /path/to/comparison.json --out ./comparison-retest --resume
+```
+
+추가 지시 원문이나 해시, 현재 평가 커밋이 달라지면 현재 중간 결과를 재사용하지 않습니다. 음성·실제 UI·처방 계산 연동의 동작과 재비교된 어조를 확인하기 전에는 전환 완료로 판단하지 않습니다.

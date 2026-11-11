@@ -1,4 +1,5 @@
 import { GoogleGenAI, Type } from '@google/genai';
+import { CHART_OPENAI_INSTRUCTIONS } from './openaiClinicalInstructions.ts';
 
 export type ChartEngine = 'gemini' | 'gpt-astra';
 export const CHART_ASTRA_MODEL = 'gpt-6-astra';
@@ -196,7 +197,7 @@ export async function generateChartResponse(prompt: unknown, audioData?: unknown
     ] }];
     const response = await openAIRequest('https://api.openai.com/v1/responses', {
       method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${env.OPENAI_API_KEY}` },
-      body: JSON.stringify({ model: CHART_ASTRA_MODEL, input, store: false,
+      body: JSON.stringify({ model: CHART_ASTRA_MODEL, instructions: CHART_OPENAI_INSTRUCTIONS, input, store: false,
         reasoning: { effort: 'medium' }, max_output_tokens: 16384,
         text: { verbosity: 'medium', format: { type: 'json_schema', name: 'initial_chart', strict: true, schema: chartResponseSchema } },
       }),
