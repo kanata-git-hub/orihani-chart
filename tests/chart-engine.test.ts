@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ChartError, generateChartResponse, parseChartResult, chartResponseSchema } from '../chartEngine.ts';
 import type { ChartDependencies } from '../chartEngine.ts';
+import { OPENAI_CLINICAL_INSTRUCTIONS } from '../openaiClinicalInstructions.ts';
 
 const fixture = () => ({
   chartContent: '- c/c : 합성 증상', diagnosticGuide: '[감별 진단 포인트]\n- 합성 소견',
@@ -23,7 +24,8 @@ const errorCode = (code: string, status?: number) => (error: unknown) => {
   return true;
 };
 
-test('Astra sends the original prompt without extra instructions and preserves model and output settings', async () => {
+test('Astra adds only the approved directive and preserves the original prompt, model and output settings', async () => {
+  assert.equal(OPENAI_CLINICAL_INSTRUCTIONS, "아래 원장 지침의 치료 목표·선택 기준·조제 방식·어조를 그대로 따르라. 지침에 없는 관찰 우선·치료 축소·단독 처방 우선 원칙을 임의로 추가하지 말고, 생활지도나 반복적인 유보 문구로 구체적인 치료·처방 제안을 대신하지 마라. 치료 선택에 영향을 주는 환자별 금기·위험 신호·핵심 정보 누락은 해당 판단에 연결해 간결하게 밝히고, 입력에 없는 사실이나 시행 여부는 만들지 마라.");
   const prompt = '  변경 금지\n원문 프롬프트  ';
   let calls = 0;
   const result = await generateChartResponse(prompt, undefined, 'gpt-astra', {
@@ -34,7 +36,7 @@ test('Astra sends the original prompt without extra instructions and preserves m
       assert.equal(new Headers(init.headers).get('authorization'), 'Bearer synthetic-openai');
       const body = JSON.parse(String(init.body));
       assert.equal(body.input, prompt);
-      assert.equal(Object.hasOwn(body, 'instructions'), false);
+      assert.equal(body.instructions, OPENAI_CLINICAL_INSTRUCTIONS);
       assert.equal(body.model, 'gpt-6-astra'); assert.equal(body.store, false);
       assert.deepEqual(body.reasoning, { effort: 'medium' });
       assert.equal(body.max_output_tokens, 16384);
@@ -144,7 +146,7 @@ test('transcription multipart uses languages[] and sends unchanged full transcri
       return new Response(JSON.stringify({ text: transcript }));
     }
     const body = JSON.parse(String(init.body));
-    assert.equal(Object.hasOwn(body, 'instructions'), false);
+    assert.equal(body.instructions, OPENAI_CLINICAL_INSTRUCTIONS);
     assert.equal(body.input[0].content[0].text, '원문');
     assert.equal(body.input[0].content[1].text, `[진료 음성의 원문 전사 — 요약하지 않은 대화 자료]\n${transcript}`);
     return completed();

@@ -5,7 +5,7 @@ No deployment or cloud resource mutation. Credentials are captured in memory,
 never printed or written to a key file, and passed only to the comparison child.
 --dry-run does not access Cloud Run, Secret Manager, or either model API.
 --config-check FILE checks an offline service-description fixture only.
---reuse-gemini reuses the completed first comparison's Gemini responses only.
+--reuse-gemini reuses the latest original-prompt comparison's Gemini responses only.
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from pathlib import Path
 
 REPOSITORY = "https://github.com/kanata-git-hub/orihani-chart.git"
 PINNED_COMMIT = "bcd998055187bbfd4dc223e14dbaa10b09ebf510"
-GEMINI_BASELINE_COMMIT = "87dae4f47f6ba551bb02b4d0df4cb7bd86962b34"
+GEMINI_BASELINE_COMMIT = "bcd998055187bbfd4dc223e14dbaa10b09ebf510"
 SERVICE = "orihani-chart"
 KEY_NAMES = ("OPENAI_API_KEY", "GEMINI_API_KEY")
 IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
@@ -337,7 +337,7 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--dry-run", action="store_true")
     mode.add_argument("--config-check", type=Path, metavar="SERVICE_JSON")
     parser.add_argument("--reuse-gemini", action="store_true",
-                        help="Reuse the first comparison's Gemini results; request only new OpenAI results.")
+                        help="Reuse the latest original-prompt comparison's Gemini results; request only new OpenAI results.")
     options = parser.parse_args(argv)
     if options.config_check and options.reuse_gemini:
         parser.error("--reuse-gemini cannot be combined with --config-check")

@@ -1,13 +1,13 @@
 # OpenAI migration decision ledger — Ori Chart
 
-Status: first application's comparison implementation; live quality and rollout pending.
+Status: comparison-only short-instruction revision authorized 2026-11-11. Prior live outputs did not meet the user’s decision/tone criteria; production remains Gemini.
 Base: `kanata-git-hub/orihani-chart` at `05b2fdbad9b56e4935e625cde45e93ede70ac2af`.
-Implementation authorized 2026-11-11 (Asia/Seoul), using the existing server-side key. No new key created. Model entitlement and actual API execution have not been verified in this development environment. No live API calls have been made.
+Implementation authorized 2026-11-11 (Asia/Seoul), using the existing server-side key. No new key created. The user has run three live comparisons in their authenticated Cloud Shell. The development environment still has no server credentials and has not itself made live API calls.
 
 ## Approved scope and stages
 
-1. Ori Chart: initial chart (text + audio) and prescription re-evaluation, same existing tone/instructions, side-by-side actual output comparison before changing the default. Current work adds the missing initial OpenAI route and a reproducible synthetic comparison runner. Existing re-evaluation already has Astra.
-2. After first-app quality validation and rollout: Ori CS, Shorts, Guide, Marketing, and clinic homepage, one app at a time. No other repository modified in this stage.
+1. Ori Chart: initial chart (text + audio) and prescription re-evaluation, same existing tone/instructions, side-by-side actual output comparison before changing the default. The comparison branch has the initial OpenAI route and a reproducible synthetic comparison runner; the current change adds only the approved short OpenAI directive. Existing re-evaluation already has Astra.
+2. Stop after Ori Chart. Do not start another app without further user instruction. No other repository is modified.
 3. The target is equal or better outputs, not just successful API requests. Default remains Gemini pending that condition. A draft PR preserves the concrete implementation while live access is blocked.
 
 Credential decision: use the existing server-only `OPENAI_API_KEY` configured for Ori Chart. No credential value is stored in this repository.
@@ -18,9 +18,9 @@ Credential decision: use the existing server-only `OPENAI_API_KEY` configured fo
 |---|---|---|---|
 | Initial chart, text | Gemini Pro → Flash → Flash Lite, buffered JSON | Add direct Responses API / gpt-6-astra, medium; preserve Gemini default and fallback ladder | chart unit + actual Express endpoint tests with mocked external services |
 | Initial chart, consultation audio | Original audio to Gemini | gpt-transcribe multipart → unabridged transcript in separate input content → Astra | audio format/size/errors tested; acoustic/word/speaker quality pending live comparison |
-| Prescription re-evaluation | Both Gemini and Astra, same prompt and shared herb processing | Existing direct Responses integration retained unchanged | existing follow-up unit, HTTP and client suite |
+| Prescription re-evaluation | Both Gemini and Astra, same prompt and shared herb processing | Existing direct Responses integration plus approved short directive; model/settings retained | existing follow-up unit, HTTP and client suite |
 | Prescription recipes | Deterministic Google Sheets computation | No AI migration needed | existing recipe suite |
-| Quality comparison | None | Sequential provider calls, frozen same prompt/audio, actual model, duration, JSON + escaped HTML | synthetic comparison tests, dry-run; no live outputs yet |
+| Quality comparison | None | Sequential provider calls, frozen same prompt/audio, actual model, duration, JSON + escaped HTML | synthetic tests and three live reports reviewed; new directive’s live outputs pending |
 
 Direct integration reuses the existing architecture and keeps credentials server-side. Gemini remains available for baseline/rollback; the OpenAI route never automatically sends a failed request to Gemini. No new agent framework, tools, retained conversation store, or user-visible reasoning stream is introduced.
 
@@ -60,7 +60,7 @@ Every heading in the migration guidance was reviewed. `Implemented` below means 
 | Programmatic Tool Calling | Not applicable | No code-execution tool workflow. |
 | Model-Aligned Tool Interfaces | Not applicable | No tool redesign in this migration. |
 
-Provider guidance: raw fetch to api.openai.com, no proxy/framework compatibility limitations. Gemini request schema and ladder retained; OpenAI uses its own text.format schema and no Gemini-specific settings. ASTRA audio requires a distinct transcription endpoint. The entire prompt factory file is byte-identical to the baseline.
+Provider guidance: raw fetch to api.openai.com, no proxy/framework compatibility limitations. Gemini request schema and ladder retained; OpenAI uses its own text.format schema and no Gemini-specific settings. ASTRA audio requires a distinct transcription endpoint. The shared prompt factory preserves the original baseline except the previously approved Chuna line. This revision does not change it. Both OpenAI paths add the same exact short directive using Responses instructions; no model or reasoning setting changes.
 
 ## Comparison and rollout gate
 
@@ -68,7 +68,15 @@ Seven synthetic text cases cover musculoskeletal charting, digestive tolerabilit
 
 Required before switching defaults: actual key/model access; identical-input baseline/candidate outputs; tone, clinical settings, missing/invented facts, formula JSON and herb post-processing review; recorded-dialogue word/number/negation/speaker preservation; latency/error review; deployed artifact and authenticated UI checks. User's broader migration authorization persists, but their equal-or-better condition has not yet been demonstrated.
 
+## Current short-instruction experiment
+
+User asked whether the short paragraph was appropriate and explicitly authorized editing and comparison. Its exact wording is stored in `openaiClinicalInstructions.ts`. Prior broad instruction changes are not restored. Latest Gemini baseline: `bcd998055187bbfd4dc223e14dbaa10b09ebf510`, generated 2026-11-11T04:18:31.151Z, seven completed Gemini outputs. The helper reuses only these matching-input Gemini runs and requests seven fresh Astra outputs. Report provenance distinguishes the extra OpenAI instruction and old baseline. Prior Astra checkpoints cannot become fresh results. No production deployment or default switch is part of this experiment.
+
 ## Validation evidence
+
+Current revision: TypeScript passed; focused engine/comparison checks passed. The actual downloaded latest report passed a no-key/no-call dry run with zero Gemini and seven Astra requests pending. Independent review confirmed shared prompt file is byte-identical and each engine changes only its new import and instructions property. All 56 engine, client, HTTP and comparison checks passed after updating the HTTP mocks to require the exact approved instruction. Final Linux CI is pending. New live model results remain pending.
+
+Earlier migration validation:
 
 Passed: TypeScript, build, 104 automated tests (security 12, re-evaluation 10, recipe 51, chart 24, comparison 7), comparison dry-run, client-key build sentinel scan, npm audit (0 vulnerabilities), and diff whitespace checks. Firestore emulator tests could not start: ECONNREFUSED 127.0.0.1:8085; Firestore code/rules were not modified. Unit/HTTP tests use synthetic data and fake provider responses. Real API, credit charging and production deployment are not verified. No other app is started while this first-app gate remains open.
 

@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createServer } from 'node:net';
 import { once } from 'node:events';
+import { OPENAI_CLINICAL_INSTRUCTIONS } from '../openaiClinicalInstructions.ts';
 
 const chart = {
   chartContent: '- c/c : 합성 시험 증상\n- Assessment : 합성 시험 진단',
@@ -58,7 +59,7 @@ async function startServer({ withKey = true, transcriptionFailure = false } = {}
       if (target === 'https://api.openai.com/v1/responses') {
         assert.equal(${transcriptionFailure}, false, 'transcription failure must stop before chart generation');
         const input = JSON.parse(options.body);
-        assert.equal(Object.hasOwn(input, 'instructions'), false);
+        assert.equal(input.instructions, ${JSON.stringify(OPENAI_CLINICAL_INSTRUCTIONS)});
         assert.equal(options.method,'POST');
         assert.equal(options.redirect,'error');
         assert.equal(input.model,'gpt-6-astra');

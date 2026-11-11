@@ -30,7 +30,9 @@ back to the other provider. Failed requests preserve the previous chart.
 Both providers use the shared prompt factories in `src/services/prompts.ts`.
 The original Gemini prompt is preserved except for one Chuna line adding
 neck/back problems with reduced joint mobility. OpenAI receives the same prompt
-without any additional clinical instructions.
+plus the user-approved short adherence instruction in `openaiClinicalInstructions.ts`.
+The current comparison reuses the latest Gemini baseline and requests seven new
+Astra outputs; model and reasoning settings remain unchanged.
 Astra uses `gpt-6-astra` with medium reasoning and strict JSON output; the existing
 herb-calculation flow receives the same recipe fields. Uploaded consultations use
 `gpt-transcribe` followed by Astra; Gemini still receives the original recording.
@@ -47,14 +49,15 @@ commands below, `npm run lint`, and `npm run build`.
 `npm run compare:ai -- --dry-run` checks seven synthetic cases without paid calls.
 See [AI comparison procedure](docs/ai-comparison.md) for real provider comparisons
 and the audio fixture. Mocked checks establish wiring and error handling only.
-Live quality, tone, latency, account/model access, and credit charging remain to
-be checked before changing the production default or moving to the next app.
+Previous live comparisons did not meet the requested decision and tone criteria.
+The new short-instruction comparison is pending; no production default is changed.
+Work on the next app requires a separate user instruction.
 
 ## Prescription re-evaluation engines
 
 The re-evaluation room defaults to Gemini and also offers GPT Astra (`gpt-6-astra`).
 Both providers receive the same existing prompt and share the prescription/herb
-post-processing. The selected engine is saved with each patient's local draft;
+post-processing. OpenAI additionally receives the short adherence instruction. The selected engine is saved with each patient's local draft;
 results show the provider and actual model returned by the server. A failed run
 keeps the previous result. Astra never silently falls back to Gemini.
 

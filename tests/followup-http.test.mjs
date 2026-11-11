@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createServer } from 'node:net';
 import { once } from 'node:events';
+import { OPENAI_CLINICAL_INSTRUCTIONS } from '../openaiClinicalInstructions.ts';
 
 // A separate process runs the real production server. All remote calls are synthetic.
 async function startServer(withKey) {
@@ -23,7 +24,7 @@ async function startServer(withKey) {
       }
       if (target === 'https://api.openai.com/v1/responses') {
         const input = JSON.parse(options.body);
-        assert.equal(Object.hasOwn(input, 'instructions'), false);
+        assert.equal(input.instructions, ${JSON.stringify(OPENAI_CLINICAL_INSTRUCTIONS)});
         assert.equal(input.model, 'gpt-6-astra');
         if (input.input === 'incomplete') return reply({status:'incomplete', output:[]});
         if (input.input === 'rate-limit') return reply({error:'redacted'},429);

@@ -1,4 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
+import { OPENAI_CLINICAL_INSTRUCTIONS } from './openaiClinicalInstructions.ts';
 
 export type FollowUpEngine = 'gemini' | 'gpt-astra';
 export const ASTRA_MODEL = 'gpt-6-astra';
@@ -34,7 +35,7 @@ export async function generateFollowUpResponse(prompt: unknown, requestedEngine?
       response = await (deps.request ?? fetch)('https://api.openai.com/v1/responses', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${env.OPENAI_API_KEY}` },
-        body: JSON.stringify({ model: ASTRA_MODEL, input: prompt, store: false,
+        body: JSON.stringify({ model: ASTRA_MODEL, instructions: OPENAI_CLINICAL_INSTRUCTIONS, input: prompt, store: false,
           reasoning: { effort: 'medium' }, max_output_tokens: 16384 }),
         signal: deps.signal ? AbortSignal.any([deps.signal, timeout]) : timeout,
         redirect: 'error',

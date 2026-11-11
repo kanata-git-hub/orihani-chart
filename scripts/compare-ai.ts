@@ -4,6 +4,7 @@ import { dirname, extname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createComparisonCases, SYNTHETIC_AUDIO_SCRIPT } from './comparisonCases.ts';
 import type { ComparisonCase, PromptFactories } from './comparisonCases.ts';
+import { OPENAI_CLINICAL_INSTRUCTIONS } from '../openaiClinicalInstructions.ts';
 
 export type ComparisonEngine = 'gemini' | 'gpt-astra';
 export type ComparisonClients = Record<ComparisonEngine, (item: ComparisonCase) => Promise<unknown>>;
@@ -26,7 +27,7 @@ export interface ComparedCase {
   promptSha256: string;
   openaiInstructions: string;
   openaiInstructionsSha256: string;
-  effectivePromptsIdentical: true;
+  effectivePromptsIdentical: false;
   openaiInstructionsChangedFromBaseline?: boolean;
   reviewPoints: string[];
   audio?: { mimeType: string; sha256: string; bytes: number };
@@ -77,8 +78,8 @@ const ENGINES = ['gemini', 'gpt-astra'] as const;
 const isRecord = (value: unknown): value is Record<string, any> => !!value && typeof value === 'object' && !Array.isArray(value);
 const invalidCheckpoint = () => Error('Invalid comparison checkpoint. Inputs or saved results differ; no existing results were replaced. No request was sent.');
 const invalidBaseline = () => Error('Invalid comparison baseline. A complete matching synthetic report is required. No request was sent.');
-// Keep this fingerprint to reject checkpoints created with retired provider-only instructions.
-const OPENAI_INSTRUCTIONS = '';
+// Use the same instruction as the application engines and reject checkpoints from any other directive.
+const OPENAI_INSTRUCTIONS = OPENAI_CLINICAL_INSTRUCTIONS;
 const validHash = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const PROVENANCE_KEYS = ['source', 'generatedAt', 'evaluatorCommit', 'openaiInstructionsSha256'] as const;
 const validProvenance = (value: unknown): value is NonNullable<ComparisonRun['provenance']> => isRecord(value) &&
@@ -161,7 +162,7 @@ function restoredRuns(entry: ComparedCase, resume: unknown): ComparisonRun[] {
   if (matches.length !== 1) throw invalidCheckpoint();
   const previous = matches[0];
   if (!sameCaseInput(entry, previous) || previous.openaiInstructions !== entry.openaiInstructions ||
-    previous.openaiInstructionsSha256 !== entry.openaiInstructionsSha256 || previous.effectivePromptsIdentical !== true ||
+    previous.openaiInstructionsSha256 !== entry.openaiInstructionsSha256 || previous.effectivePromptsIdentical !== entry.effectivePromptsIdentical ||
     !Array.isArray(previous.runs) || previous.runs.length > ENGINES.length ||
     previous.runs.some((run: unknown, index: number) => !isRecord(run) || run.engine !== ENGINES[index] || !['completed', 'failed'].includes(run.status))) throw invalidCheckpoint();
   return previous.runs.map((run: any, index: number) => {
@@ -189,7 +190,7 @@ function prepareComparison(cases: ComparisonCase[], options: ComparisonOptions) 
   const compared = items.map(item => {
     const entry: ComparedCase = { id: item.id, title: item.title, kind: item.kind, synthetic: true, prompt: item.prompt,
       promptSha256: promptHash(item.prompt), openaiInstructions: OPENAI_INSTRUCTIONS,
-      openaiInstructionsSha256: promptHash(OPENAI_INSTRUCTIONS), effectivePromptsIdentical: true,
+      openaiInstructionsSha256: promptHash(OPENAI_INSTRUCTIONS), effectivePromptsIdentical: false,
       reviewPoints: [...item.reviewPoints], runs: [] };
     if (item.audioData) {
       const bytes = Buffer.from(item.audioData.data, 'base64');
@@ -214,7 +215,7 @@ function prepareComparison(cases: ComparisonCase[], options: ComparisonOptions) 
   return { items, compared };
 }
 
-/** Both providers receive the same application prompt without provider-only clinical instructions. */
+/** Both providers receive the unchanged application prompt; OpenAI also receives the approved short directive. */
 export async function compareCases(cases: ComparisonCase[], clients: ComparisonClients, options: ComparisonOptions = {}): Promise<ComparedCase[]> {
   // Validate every baseline/checkpoint case before any paid call or replacement write.
   const { items, compared } = prepareComparison(cases, options);
@@ -249,10 +250,10 @@ export async function compareCases(cases: ComparisonCase[], clients: ComparisonC
 
 export function renderComparisonHtml(cases: ComparedCase[], generatedAt: string): string {
   const sections = cases.map(item => `<section><h2>${escapeHtml(item.title)}</h2><p><code>${escapeHtml(item.id)}</code> · prompt SHA-256: <code>${escapeHtml(item.promptSha256)}</code></p>
-<p>두 엔진에 동일한 앱 프롬프트를 전달하며 OpenAI 추가 지시는 없습니다. 출력 형식 설정과 음성 처리 방식은 엔진별로 다릅니다. OpenAI instructions SHA-256 (빈 문자열): <code>${escapeHtml(item.openaiInstructionsSha256)}</code>${item.openaiInstructionsChangedFromBaseline !== undefined ? ` · 기존 비교 대비 OpenAI 추가 지시 변경: ${item.openaiInstructionsChangedFromBaseline ? '예' : '아니요'}` : ''}</p>
+<p>두 엔진에 동일한 앱 프롬프트를 전달하며 OpenAI에만 승인된 짧은 보완 지시를 추가합니다. 전체 지시가 동일한 비교는 아닙니다. 출력 형식 설정과 음성 처리 방식은 엔진별로 다릅니다. OpenAI instructions SHA-256: <code>${escapeHtml(item.openaiInstructionsSha256)}</code>${item.openaiInstructionsChangedFromBaseline !== undefined ? ` · 기존 비교 대비 OpenAI 추가 지시 변경: ${item.openaiInstructionsChangedFromBaseline ? '예' : '아니요'}` : ''}</p>
 <ul>${item.reviewPoints.map(point => `<li>${escapeHtml(point)}</li>`).join('')}</ul>
 <div class="columns">${item.runs.map(run => `<article><h3>${escapeHtml(run.engine)}</h3><p>${escapeHtml(run.status)} · ${run.durationMs} ms · ${escapeHtml(run.actualModel ?? '모델 미확인')}${run.audioModel ? ` · 음성: ${escapeHtml(run.audioModel)}` : ''}</p>${run.provenance ? `<p>기존 Gemini 결과 재사용 · 원본 생성: ${escapeHtml(run.provenance.generatedAt)} · 원본 evaluator: <code>${escapeHtml(run.provenance.evaluatorCommit)}</code></p>` : ''}<pre>${escapeHtml(JSON.stringify(run.status === 'completed' ? run.result : run.error, null, 2))}</pre></article>`).join('')}</div>
-<details><summary>OpenAI 추가 지시: 없음</summary><pre>${escapeHtml(item.openaiInstructions)}</pre></details>
+<details><summary>OpenAI 추가 지시 원문</summary><pre>${escapeHtml(item.openaiInstructions)}</pre></details>
 <details><summary>동일한 원문 프롬프트</summary><pre>${escapeHtml(item.prompt)}</pre></details></section>`).join('\n');
   return `<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>오리차트 AI 결과 비교</title>
 <style>body{font:16px/1.6 system-ui,sans-serif;margin:28px;color:#28221d;background:#faf8f3}main{max-width:1600px;margin:auto}h1,h2{line-height:1.3}section{margin:28px 0;padding:24px;background:#fff;border:1px solid #d8d0c5;border-radius:10px}.columns{display:grid;grid-template-columns:1fr 1fr;gap:18px}article{min-width:0;background:#f4f1eb;padding:16px}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.65 ui-monospace,monospace}code{overflow-wrap:anywhere}table{width:100%;border-collapse:collapse}td,th{text-align:left;vertical-align:top;padding:10px;border:1px solid #d8d0c5}.pending{padding:18px;background:#fff0cb;border:1px solid #be9952}@media(max-width:800px){.columns{grid-template-columns:1fr}body{margin:12px}section{padding:14px}}</style>
@@ -275,7 +276,7 @@ export async function writeComparison(cases: ComparedCase[], outDir: string): Pr
   // JSON is the resume authority. Commit it last; HTML can be regenerated after interruption.
   await atomicWrite(htmlPath, renderComparisonHtml(cases, generatedAt));
   await atomicWrite(jsonPath, JSON.stringify({ generatedAt, synthetic: true, reviewStatus: 'pending_manual_review', clinicalEquivalence: 'not_established',
-    effectivePromptsIdentical: true, comparisonMode: cases.some(item => item.runs.some(run => run.provenance)) ? 'candidate_with_reused_gemini_baseline' : 'both_providers',
+    effectivePromptsIdentical: false, comparisonMode: cases.some(item => item.runs.some(run => run.provenance)) ? 'candidate_with_reused_gemini_baseline' : 'both_providers',
     evaluatorCommit: process.env.ORI_COMPARISON_COMMIT || null, audioComparisonIncluded: cases.some(item => item.audio), cases }, null, 2) + '\n');
   return { jsonPath, htmlPath };
 }
@@ -364,7 +365,7 @@ async function main(args: string[]) {
   const prepared = prepareComparison(cases, { resume, baseline });
   if (flags.has('--dry-run')) {
     console.log(JSON.stringify({ mode: 'dry-run', paidCalls: 0, synthetic: true, audioComparisonIncluded: cases.some(item => item.audioData),
-      baselineIncluded: baseline !== undefined, effectivePromptsIdentical: true,
+      baselineIncluded: baseline !== undefined, effectivePromptsIdentical: false,
       pendingRequests: Object.fromEntries(ENGINES.map((engine, index) => [engine, prepared.compared.filter(item => item.runs[index]?.status !== 'completed').length])),
       cases: prepared.compared.map(({ id, kind, title, prompt, promptSha256, openaiInstructionsSha256 }) => ({ id, kind, title, promptSha256, promptCharacters: prompt.length, openaiInstructionsSha256 })) }, null, 2));
     return;
