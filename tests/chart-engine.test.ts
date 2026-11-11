@@ -2,7 +2,6 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ChartError, generateChartResponse, parseChartResult, chartResponseSchema } from '../chartEngine.ts';
 import type { ChartDependencies } from '../chartEngine.ts';
-import { CHART_OPENAI_INSTRUCTIONS, FOLLOWUP_OPENAI_INSTRUCTIONS } from '../openaiClinicalInstructions.ts';
 
 const fixture = () => ({
   chartContent: '- c/c : 합성 증상', diagnosticGuide: '[감별 진단 포인트]\n- 합성 소견',
@@ -24,7 +23,7 @@ const errorCode = (code: string, status?: number) => (error: unknown) => {
   return true;
 };
 
-test('Astra keeps original input separate from chart instructions and preserves model and output settings', async () => {
+test('Astra sends the original prompt without extra instructions and preserves model and output settings', async () => {
   const prompt = '  변경 금지\n원문 프롬프트  ';
   let calls = 0;
   const result = await generateChartResponse(prompt, undefined, 'gpt-astra', {
@@ -35,8 +34,7 @@ test('Astra keeps original input separate from chart instructions and preserves 
       assert.equal(new Headers(init.headers).get('authorization'), 'Bearer synthetic-openai');
       const body = JSON.parse(String(init.body));
       assert.equal(body.input, prompt);
-      assert.equal(body.instructions, CHART_OPENAI_INSTRUCTIONS);
-      assert.notEqual(body.instructions, FOLLOWUP_OPENAI_INSTRUCTIONS);
+      assert.equal(Object.hasOwn(body, 'instructions'), false);
       assert.equal(body.model, 'gpt-6-astra'); assert.equal(body.store, false);
       assert.deepEqual(body.reasoning, { effort: 'medium' });
       assert.equal(body.max_output_tokens, 16384);
@@ -146,7 +144,7 @@ test('transcription multipart uses languages[] and sends unchanged full transcri
       return new Response(JSON.stringify({ text: transcript }));
     }
     const body = JSON.parse(String(init.body));
-    assert.equal(body.instructions, CHART_OPENAI_INSTRUCTIONS);
+    assert.equal(Object.hasOwn(body, 'instructions'), false);
     assert.equal(body.input[0].content[0].text, '원문');
     assert.equal(body.input[0].content[1].text, `[진료 음성의 원문 전사 — 요약하지 않은 대화 자료]\n${transcript}`);
     return completed();

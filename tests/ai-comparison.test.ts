@@ -6,7 +6,6 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { assertSeparateBaselineOutput, compareCases, prepareCases, promptHash, readComparisonBaseline, readComparisonCheckpoint, renderComparisonHtml, writeComparison } from '../scripts/compare-ai.ts';
-import { CHART_OPENAI_INSTRUCTIONS, FOLLOWUP_OPENAI_INSTRUCTIONS } from '../openaiClinicalInstructions.ts';
 import type { ComparisonCase } from '../scripts/comparisonCases.ts';
 
 const sample: ComparisonCase = { id: 'synthetic', kind: 'chart', title: '합성 <script>bad()</script>', synthetic: true,
@@ -24,9 +23,9 @@ test('comparison calls providers serially with the same unchanged prompt and aud
   assert.equal(seen[0].prompt, sample.prompt);
   assert.deepEqual(seen[0].audioData, item.audioData);
   assert.equal(result[0].promptSha256, promptHash(sample.prompt));
-  assert.equal(result[0].openaiInstructions, CHART_OPENAI_INSTRUCTIONS);
-  assert.equal(result[0].openaiInstructionsSha256, promptHash(CHART_OPENAI_INSTRUCTIONS));
-  assert.equal(result[0].effectivePromptsIdentical, false);
+  assert.equal(result[0].openaiInstructions, '');
+  assert.equal(result[0].openaiInstructionsSha256, 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
+  assert.equal(result[0].effectivePromptsIdentical, true);
   assert.equal(result[0].runs[0].actualModel, 'gemini-actual');
   assert.equal(result[0].runs[1].audioModel, 'transcription-actual');
   assert.equal(result[0].audio?.bytes, 9);
@@ -77,7 +76,7 @@ test('written report contains full application result but no automatic clinical 
     assert.equal(report.clinicalEquivalence, 'not_established');
     assert.equal(report.cases[0].runs[0].result.chartContent, '원문 결과');
     assert.equal(report.audioComparisonIncluded, false);
-    assert.equal(report.effectivePromptsIdentical, false);
+    assert.equal(report.effectivePromptsIdentical, true);
   } finally { await rm(out, { recursive: true, force: true }); }
 });
 
@@ -168,6 +167,7 @@ test('resume rejects changed input identity, non-synthetic results, reversed eng
     (entry: any) => { entry.openaiInstructions += ' stale'; entry.openaiInstructionsSha256 = promptHash(entry.openaiInstructions); },
     (entry: any) => { delete entry.openaiInstructions; delete entry.openaiInstructionsSha256; },
     (entry: any) => { entry.openaiInstructionsSha256 = 'incorrect'; },
+    (entry: any) => { entry.effectivePromptsIdentical = false; },
     (entry: any) => { entry.audio = { mimeType: 'audio/wav', bytes: 1, sha256: 'x' }; },
     (entry: any) => { entry.runs.reverse(); },
   ];
@@ -297,14 +297,18 @@ test('baseline reuse makes exactly seven new Astra calls and preserves Gemini pr
     assert.equal((entry.runs[1].result as any).candidate, true);
     assert.equal(entry.runs[0].provenance?.generatedAt, baseline.generatedAt);
     assert.equal(entry.runs[0].provenance?.evaluatorCommit, baseline.evaluatorCommit);
-    assert.equal(entry.openaiInstructionsChangedFromBaseline, true);
-    assert.equal(entry.openaiInstructions, entry.kind === 'chart' ? CHART_OPENAI_INSTRUCTIONS : FOLLOWUP_OPENAI_INSTRUCTIONS);
+    assert.equal(entry.runs[0].provenance?.openaiInstructionsSha256, null);
+    assert.equal(entry.openaiInstructionsChangedFromBaseline, false);
+    assert.equal(entry.openaiInstructions, '');
+    assert.equal(entry.openaiInstructionsSha256, promptHash(''));
+    assert.equal(entry.effectivePromptsIdentical, true);
   }
   const html = renderComparisonHtml(compared, '2026-11-11');
-  assert.match(html, /전체 유효 프롬프트는 동일하지 않습니다/);
+  assert.match(html, /동일한 앱 프롬프트를 전달하며 OpenAI 추가 지시는 없습니다/);
+  assert.match(html, /출력 형식 설정과 음성 처리 방식은 엔진별로 다릅니다/);
   assert.match(html, /기존 Gemini 결과 재사용/);
   assert.match(html, /87dae4f47f6ba551bb02b4d0df4cb7bd86962b34/);
-  assert.match(html, /기존 비교 대비 OpenAI 추가 지시 변경: 예/);
+  assert.match(html, /기존 비교 대비 OpenAI 추가 지시 변경: 아니요/);
   // The current checkpoint is authoritative; the same baseline must never overwrite or repeat new Astra results.
   const resumed = await compareCases(cases, {
     gemini: async () => { throw Error('unexpected repeat'); }, 'gpt-astra': async () => { throw Error('unexpected repeat'); },
@@ -345,15 +349,23 @@ test('baseline validation rejects stale inputs, unsafe shapes, wrong models and 
   assert.equal(calls, 0); assert.equal(writes, 0);
 });
 
-test('baseline audio identity is checked and current instruction changes invalidate resume even with a valid baseline', async () => {
+test('baseline audio identity is checked and retired nonempty instructions invalidate resume even with a valid baseline', async () => {
   const item = { ...sample, audioData: { mimeType: 'audio/wav', data: Buffer.from('audio A').toString('base64') } };
   const baseline = await makeOldBaseline([item]);
   let calls = 0;
   const clients = { gemini: async () => { calls++; return {}; }, 'gpt-astra': async value => { calls++; return baselineOutput(value, 'gpt-astra'); } };
   await assert.rejects(compareCases([{ ...item, audioData: { ...item.audioData, data: Buffer.from('audio B').toString('base64') } }], clients, { baseline }), /Invalid comparison baseline/);
   assert.equal(calls, 0);
+  const retiredInstructions = 'retired provider-only clinical instructions';
+  baseline.cases[0].openaiInstructions = retiredInstructions;
+  baseline.cases[0].openaiInstructionsSha256 = promptHash(retiredInstructions);
+  baseline.cases[0].effectivePromptsIdentical = false;
   const current = await compareCases([item], clients, { baseline });
-  current[0].openaiInstructions += ' stale'; current[0].openaiInstructionsSha256 = promptHash(current[0].openaiInstructions);
+  assert.equal(current[0].openaiInstructions, '');
+  assert.equal(current[0].openaiInstructionsChangedFromBaseline, true);
+  assert.equal(current[0].runs[0].provenance?.openaiInstructionsSha256, promptHash(retiredInstructions));
+  current[0].openaiInstructions = retiredInstructions;
+  current[0].openaiInstructionsSha256 = promptHash(retiredInstructions);
   calls = 0;
   await assert.rejects(compareCases([item], clients, { baseline, resume: current }), /Invalid comparison checkpoint/);
   assert.equal(calls, 0);
@@ -372,7 +384,8 @@ test('baseline CLI dry run validates the full old report without keys and report
     assert.equal(dry.status, 0, dry.stderr);
     const manifest = JSON.parse(dry.stdout);
     assert.deepEqual(manifest.pendingRequests, { gemini: 0, 'gpt-astra': 7 });
-    assert.equal(manifest.effectivePromptsIdentical, false);
+    assert.equal(manifest.effectivePromptsIdentical, true);
+    assert.ok(manifest.cases.every((entry: any) => entry.openaiInstructionsSha256 === promptHash('')));
     const subset = spawnSync(process.execPath, ['--experimental-strip-types', cli, '--dry-run', '--baseline', path, '--case', 'chart-mild-pain'], { env, encoding: 'utf8' });
     assert.equal(subset.status, 2); assert.match(subset.stderr, /Invalid comparison baseline/);
     await writeFile(path, 'private invalid JSON');
