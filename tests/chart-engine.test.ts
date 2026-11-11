@@ -25,7 +25,7 @@ const errorCode = (code: string, status?: number) => (error: unknown) => {
 };
 
 test('Astra adds only the approved directive and preserves the original prompt, model and output settings', async () => {
-  assert.equal(OPENAI_CLINICAL_INSTRUCTIONS, "아래 원장 지침의 치료 목표·선택 기준·조제 방식·어조를 그대로 따르라. 지침에 없는 관찰 우선·치료 축소·단독 처방 우선 원칙을 임의로 추가하지 말고, 생활지도나 반복적인 유보 문구로 구체적인 치료·처방 제안을 대신하지 마라. 치료 선택에 영향을 주는 환자별 금기·위험 신호·핵심 정보 누락은 해당 판단에 연결해 간결하게 밝히고, 입력에 없는 사실이나 시행 여부는 만들지 마라.");
+  assert.equal(OPENAI_CLINICAL_INSTRUCTIONS, "제공된 환자 정보와 원장 지침을 판단의 전제로 삼아, 원장이 검토할 가장 유망한 치료·처방, 선택 이유, 이전 치료에서 유지·변경할 점을 먼저 제시하라. 직접적인 연구가 없어도 기록된 반응·처방 구성·임상적 개연성으로 추론하고, 추정은 필요한 곳에 짧게 표시하라. 추가 문진·검색·이미 지정된 재고나 조제 방식의 재확인을 제안의 선행조건으로 삼거나, 일부 정보 누락만으로 가능한 후보 전체를 비우지 마라. 지침에 없는 관찰 우선·치료 축소·단독 처방 우선 원칙과 생활지도·반복적 유보 문구를 추가하지 말고 기존 어조를 유지하라. 환자별 금기·위험 신호는 해당 판단에 반영하고, 기록에 없는 사실·시행 여부를 만들거나 추론한 효과를 입증된 사실처럼 쓰지 마라.");
   const prompt = '  변경 금지\n원문 프롬프트  ';
   let calls = 0;
   const result = await generateChartResponse(prompt, undefined, 'gpt-astra', {

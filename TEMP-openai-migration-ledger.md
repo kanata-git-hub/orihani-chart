@@ -2,7 +2,7 @@
 
 Status: comparison-only short-instruction revision authorized 2026-11-11. Prior live outputs did not meet the user’s decision/tone criteria; production remains Gemini.
 Base: `kanata-git-hub/orihani-chart` at `05b2fdbad9b56e4935e625cde45e93ede70ac2af`.
-Implementation authorized 2026-11-11 (Asia/Seoul), using the existing server-side key. No new key created. The user has run three live comparisons in their authenticated Cloud Shell. The development environment still has no server credentials and has not itself made live API calls.
+Implementation authorized 2026-11-11 (Asia/Seoul), using the existing server-side key. No new key created. The user has run four live comparisons in their authenticated Cloud Shell. The development environment still has no server credentials and has not itself made live API calls.
 
 ## Approved scope and stages
 
@@ -20,7 +20,7 @@ Credential decision: use the existing server-only `OPENAI_API_KEY` configured fo
 | Initial chart, consultation audio | Original audio to Gemini | gpt-transcribe multipart → unabridged transcript in separate input content → Astra | audio format/size/errors tested; acoustic/word/speaker quality pending live comparison |
 | Prescription re-evaluation | Both Gemini and Astra, same prompt and shared herb processing | Existing direct Responses integration plus approved short directive; model/settings retained | existing follow-up unit, HTTP and client suite |
 | Prescription recipes | Deterministic Google Sheets computation | No AI migration needed | existing recipe suite |
-| Quality comparison | None | Sequential provider calls, frozen same prompt/audio, actual model, duration, JSON + escaped HTML | synthetic tests and three live reports reviewed; new directive’s live outputs pending |
+| Quality comparison | None | Sequential provider calls, frozen same prompt/audio, actual model, duration, JSON + escaped HTML | synthetic tests and four live reports reviewed; new directive’s live outputs pending |
 
 Direct integration reuses the existing architecture and keeps credentials server-side. Gemini remains available for baseline/rollback; the OpenAI route never automatically sends a failed request to Gemini. No new agent framework, tools, retained conversation store, or user-visible reasoning stream is introduced.
 
@@ -70,11 +70,13 @@ Required before switching defaults: actual key/model access; identical-input bas
 
 ## Current short-instruction experiment
 
+Latest revision, authorized 2026-11-11: replace the adherence paragraph with a concise reasoning task grounded in supplied patient information and the clinician’s given premises. Output the most promising candidate, rationale and maintenance/change first; do not make extra questioning, search, or reconfirmation of already specified compounding a prerequisite. Inference remains distinct from fact, and patient-specific contraindications and red flags remain relevant. Shared prompts, model/settings, provider paths and baseline stay unchanged. Fourth actual report (evaluator 837d3eeead402562e2c8a6dea8dff179f60f136b) completed seven new Astra runs but still omitted the traffic-injury formula and added compounding reconfirmation. The new instruction has not had live outputs reviewed.
+
 User asked whether the short paragraph was appropriate and explicitly authorized editing and comparison. Its exact wording is stored in `openaiClinicalInstructions.ts`. Prior broad instruction changes are not restored. Latest Gemini baseline: `bcd998055187bbfd4dc223e14dbaa10b09ebf510`, generated 2026-11-11T04:18:31.151Z, seven completed Gemini outputs. The helper reuses only these matching-input Gemini runs and requests seven fresh Astra outputs. Report provenance distinguishes the extra OpenAI instruction and old baseline. Prior Astra checkpoints cannot become fresh results. No production deployment or default switch is part of this experiment.
 
 ## Validation evidence
 
-Current revision: TypeScript passed; focused engine/comparison checks passed. The actual downloaded latest report passed a no-key/no-call dry run with zero Gemini and seven Astra requests pending. Independent review confirmed shared prompt file is byte-identical and each engine changes only its new import and instructions property. All 56 engine, client, HTTP and comparison checks passed after updating the HTTP mocks to require the exact approved instruction. Final Linux CI is pending. New live model results remain pending.
+Current reasoning revision: TypeScript and all 56 engine/client/HTTP/comparison checks passed. The retired-instruction regression uses the exact preceding paragraph. The actual downloaded latest report passed a no-key/no-call dry run with zero Gemini and seven Astra requests pending. Independent review confirmed shared prompt file is byte-identical and each engine changes only its new import and instructions property. All 56 engine, client, HTTP and comparison checks passed after updating the HTTP mocks to require the exact approved instruction. Final Linux CI is pending. New live model results remain pending.
 
 Earlier migration validation:
 
