@@ -121,7 +121,7 @@ export const FollowUpTab: React.FC<{ activeTab: number }> = ({ activeTab }) => {
         
         const resDetail = match['효과(자세히)'] || '';
         const resBasic = match['효과'] || '';
-        const finalResponse = resDetail ? `${resBasic}: ${resDetail}` : resBasic;
+        const finalResponse = [resBasic, resDetail].map(value => String(value).trim()).filter(Boolean).join(': ');
 
         return {
           id: Date.now().toString() + index,

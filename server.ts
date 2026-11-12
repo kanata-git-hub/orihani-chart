@@ -366,7 +366,8 @@ app.post("/api/fetch-google-sheet", async (req, res) => {
     const sheets = google.sheets({ version: 'v4', auth });
     
     const spreadsheetId = '1Nz9rBTwGYog-HEPPUyX5YsNnKvWBW5B9E7LADKMVZ48';
-    const range = '한약환자!A1:U';
+    // V (효과) and W (효과(자세히)) are required for follow-up feedback.
+    const range = '한약환자!A1:W';
 
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId,
