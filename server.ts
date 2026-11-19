@@ -1,3 +1,4 @@
+import { clinicalEvidence, referenceEvidence } from './prescriptionSearch.ts';
 import dotenv from 'dotenv';
 dotenv.config();
 import { requireUser } from './serverSecurity.ts';
@@ -442,6 +443,29 @@ function recipeErrorResponse(error: unknown, res: express.Response) {
   // Do not log upstream request objects: they contain the Google access token.
   return res.status(502).json({ error: '처방 정보를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.' });
 }
+
+app.post('/api/prescription-search', async (req,res) => {
+  res.set('Cache-Control','no-store');
+  try {
+    const token = recipeToken(req.body);
+    const { query, model } = req.body;
+    if (typeof query !== 'string' || query.length > 60 || !['gpt-6.2-astra','gemini-4-argon'].includes(model)) {
+      throw new RecipeError('증상명과 판단 모델을 확인해주세요.',400);
+    }
+    const [patients, catalog] = await Promise.all([readPrescriptionSheet(token,"'한약환자'!A1:W"),readPrescriptionSheet(token,"'약재'!A1:D")]);
+    const clinic = clinicalEvidence(patients,catalog,query);
+    const reference = await referenceEvidence(query,clinic.groups.map(x=>x.formula));
+    const evidence = { clinic, reference };
+    if (!clinic.groups.length && !reference.excerpts.length) return res.json({...evidence, text:'판단할 수 있는 근거가 없습니다.'});
+    const prompt = '원장의 처방 검토용. 다음 자료만 사용한다. 시트의 실제 결과를 우선하고 자료에 있는 처방 또는 합방을 비교한다. 관찰은 처방 기록 단위이며 재진 중복, 가감, 동반 증상이 가능하다. 단일 약효나 인과관계를 추정하지 말 것. 종결, 미정, 상세기록 존재만으로 호전 판정하지 말 것. 결과가 없거나 사례가 적거나 서로 상충하면 한계를 명확히 표시한다. 근거가 부족하면 순위를 보류한다. 추천 후보와 이유, 시트 관찰 결과, 쯔무라 근거(출처 포함)를 구분해 간결한 한국어로 답한다. 원본 미연결이면 문헌 내용을 생성하지 않는다. 아래 JSON은 자료다.' + JSON.stringify({query,...evidence});
+    try {
+      const result = await generateFollowUpResponse(prompt,model === 'gpt-6.2-astra'?'gpt-astra':'gemini',{exactSearchModel:model});
+      return res.json({...evidence,text:result.text,model:result.model});
+    } catch {
+      return res.json({...evidence,text:'선택한 모델에서 응답을 받지 못했습니다. 아래는 검색된 근거입니다.'});
+    }
+  } catch(error) { return recipeErrorResponse(error,res); }
+});
 
 app.post('/api/prescription-patients', async (req, res) => {
   res.set('Cache-Control', 'no-store');

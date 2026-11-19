@@ -18,16 +18,17 @@ import { PatientBriefingForm } from './components/PatientBriefingForm';
 import { AnalysisOutput } from './components/AnalysisOutput';
 import { ResetModal } from './components/ResetModal';
 import { FollowUpTab } from './components/FollowUpTab';
+import { PrescriptionSearchTab } from './components/PrescriptionSearchTab';
 import { PrescriptionRecipeTab } from './components/PrescriptionRecipeTab';
 import { PWAInstaller } from './components/PWAInstaller';
 import { initialBriefing } from './constants';
 
-type AppMode = 'INITIAL' | 'FOLLOW_UP' | 'RECIPE';
+type AppMode = 'INITIAL' | 'FOLLOW_UP' | 'RECIPE' | 'SEARCH';
 
 function restoreAppMode(uid: string | null): AppMode {
   try {
     const mode = scopedStorage(localStorage, uid).getItem('appMode');
-    if (mode === 'FOLLOW_UP' || mode === 'RECIPE') return mode;
+    if (mode === 'FOLLOW_UP' || mode === 'RECIPE' || mode === 'SEARCH') return mode;
   } catch { /* Storage can be unavailable in private browsing. */ }
   return 'INITIAL';
 }
@@ -135,9 +136,15 @@ function MainApp() {
           >
             처방 레시피
           </button>
+          <button
+            onClick={() => setAppMode('SEARCH')}
+            className={`px-8 py-2.5 border-2 border-primary font-bold text-lg transition-colors ${appMode === 'SEARCH' ? 'bg-accent text-primary shadow-[4px_4px_0px_0px_rgba(85,44,36,1)] translate-y-[-2px]' : 'bg-white text-primary hover:bg-primary/5'}`}
+          >
+            증상별 처방 검색
+          </button>
         </div>
 
-        <Header activeTab={activeTab} setActiveTab={setActiveTab} showPatientTabs={appMode !== 'RECIPE'} onResetAll={() => setIsGlobalResetModalOpen(true)} />
+        <Header activeTab={activeTab} setActiveTab={setActiveTab} showPatientTabs={appMode === 'INITIAL' || appMode === 'FOLLOW_UP'} onResetAll={() => setIsGlobalResetModalOpen(true)} />
         
         {/* Mobile App Mode Toggle */}
         <div className="grid grid-cols-2 gap-2 mb-6 lg:hidden">
@@ -158,6 +165,12 @@ function MainApp() {
             className={`col-span-2 py-3 px-2 border-2 border-primary font-bold text-base transition-colors flex items-center justify-center touch-target ${appMode === 'RECIPE' ? 'bg-accent text-primary shadow-[4px_4px_0px_0px_rgba(85,44,36,1)]' : 'bg-white text-primary'}`}
           >
             처방 레시피
+          </button>
+          <button
+            onClick={() => setAppMode('SEARCH')}
+            className={`col-span-2 py-3 px-2 border-2 border-primary font-bold text-base transition-colors flex items-center justify-center touch-target ${appMode === 'SEARCH' ? 'bg-accent text-primary shadow-[4px_4px_0px_0px_rgba(85,44,36,1)]' : 'bg-white text-primary'}`}
+          >
+            증상별 처방 검색
           </button>
           <button 
             onClick={logout}
@@ -205,7 +218,7 @@ function MainApp() {
               <AnalysisOutput result={result} />
             </section>
           </div>
-        ) : appMode === 'RECIPE' ? (
+        ) : appMode === 'SEARCH' ? (<PrescriptionSearchTab key={user?.uid} />) : appMode === 'RECIPE' ? (
           <PrescriptionRecipeTab key={user?.uid || 'signed-out'} />
         ) : (
           /* Follow-Up Chat Mode View */
