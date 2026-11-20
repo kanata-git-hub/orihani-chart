@@ -55,9 +55,30 @@ test('returns independently ranked source-anchored singles/new combinations even
     assert.deepEqual(result.recommendations.map(r => [r.rank,r.formula]), [[1,'라탕 + 나탕'], [2,'육가탕']]);
     assert.equal(result.recommendations[0].references.length, 2);
     assert.deepEqual(result.recommendations[0].references[0], {title: entries[3].title, excerpt: entries[3].indication, url: entries[3].url});
+    assert.equal(result.recommendations[0].conditionSummary, [entries[3].indication, entries[1].indication].join(' / '));
+    assert.match(result.shortlistNote!, /제외해 2개/);
     assert.match(result.recommendations[0].useHistory, /개별 사용 기록 있음/);
     assert.equal(result.recommendations[1].combinationRationale, '');
   }
+});
+
+test('collapsed conditions quote the selected product, fall back on unsupported model text and preserve the pairing', async () => {
+  const products = entries.map((entry, i) => ({...entry, indication: '다른 용도도 있다. ' + entry.name + '의 피로 동반 조건 ' + i + '번.'}));
+  const result = await recommendFromGuide([header], catalog, ['피로'], products, 'gpt-6.2-astra', generateMock([
+    {...option([1, 2]), conditionPhrases: ['육가탕의 피로 동반 조건', '자료에 없는 진단']},
+    {...option([3]), conditionPhrases: ['나탕의 피로 동반 조건']},
+  ]));
+  assert.deepEqual(result.recommendations.map(item => item.conditionSummary), [
+    '육가탕의 피로 동반 조건 / 나탕의 피로 동반 조건 1번.', '다탕의 피로 동반 조건 2번.',
+  ]);
+  assert.match(result.shortlistNote!, /2개/);
+});
+
+test('shortening the guide preview cannot turn a negated condition into a positive cue', async () => {
+  const products = [{...entries[0], indication: '다른 용도. 체력이 중간이고 심하게 쇠약하지 않은 사람의 증상.'}];
+  const result = await recommendFromGuide([header], catalog, ['피로'], products, 'gemini-4-argon',
+    generateMock([{...option([1]), conditionPhrases: ['심하게 쇠약']}]));
+  assert.equal(result.recommendations[0].conditionSummary, '체력이 중간이고 심하게 쇠약하지 않은 사람의 증상.');
 });
 
 test('rejects previously co-used pairs even from larger groups and repeated fixed-product alternatives', async () => {

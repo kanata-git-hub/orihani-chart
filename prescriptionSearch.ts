@@ -157,7 +157,7 @@ function safeClinicalClauses(clauses:string[],names:Set<string>) {
   return usable?result:[];
 }
 
-function summarizeFeedback(clauses:string[], terms:string[], grade:Grade) {
+function summarizeFeedback(clauses:string[], terms:string[], grade:Grade, labelTarget:boolean) {
   const unique = new Map<string, Finding>();
   // Conjunctions start a fresh attribution scope. An unlabelled outcome is
   // retained with its target unknown rather than inherited from the chart C/C.
@@ -170,7 +170,7 @@ function summarizeFeedback(clauses:string[], terms:string[], grade:Grade) {
     const assignments=terms.map(term=>targetOf(s,term,labels));
     const explicit=terms.filter((_,index)=>assignments[index]==='검색 증상');
     let target=assignments[0];
-    if (terms.length>1) {
+    if (labelTarget) {
       if (explicit.length>1 || assignments.includes('여러 증상 언급·귀속 불명')) target='여러 증상 언급·귀속 불명';
       else if (explicit.length===1) target='검색 증상: '+explicit[0];
     }
@@ -191,6 +191,7 @@ type SymptomContext = {
 };
 type Group = {components:string[], contexts:Map<string,SymptomContext>, 기록:number, 좋음:number, 보통:number, 나쁨:number, 상세기록:number, 상세미기록:number, 상세해석불가:number, 가감기록:number, targetImproved:number, targetCaution:number, details: Map<string, Finding & {건수:number}>, notes:Map<string,ClinicalNote>};
 const cautionCourses = new Set(['호전 없음','불변·잔존','악화','재발']);
+const otherTargetUsageKey = Symbol('otherTargetUsage');
 export function clinicalEvidence(rows: SheetRows, catalog: SheetRows, query: string) {
   const headers = (rows[0] ?? []).map(compact);
   const idx = (name: string) => headers.indexOf(compact(name));
@@ -212,34 +213,54 @@ export function clinicalEvidence(rows: SheetRows, catalog: SheetRows, query: str
   const dictionary=new Map(catalog.slice(1).map(row=>[compact(row[col]),String(row[col]??'').trim()]));
   const groups=new Map<string,Group>();
   const excluded={미정:0,종결:0,결과미기록:0,기타:0};
+  // Background use is retained as anonymous totals only and is never serialized with the clinic records.
+  const otherTargets={all:emptyCounts(), byFormula:new Map<string,Counts>()};
   let skipped=0;
   for (const row of rows.slice(1)) {
     const get=(name:string)=>String(row[idx(name)]??'').trim();
     const symptomCell=compact(get('증상')).replace(negativeMention,',');
     const matched=targets.filter(term=>symptomCell.includes(term));
-    if (!matched.length) continue;
+    if (!matched.length && !/[가-힣a-z]/.test(symptomCell)) continue;
     const v=get('효과');
     // An empty 효과 cell means the prescription was never handed over.
     if (!v) {
-      excluded.결과미기록++;
+      if (matched.length) excluded.결과미기록++;
       continue;
     }
     if (!isGrade(v)) {
       const bucket=v==='미정'||v==='종결'?v:'기타';
-      excluded[bucket]++;
+      if (matched.length) excluded[bucket]++;
       continue;
     }
     const split=['처방','처방2','처방3'].map(get).filter(Boolean);
     const combined=combinedParts(get('처방 조합'));
-    if (!split.length && combined.invalid) { skipped++; continue; }
+    if (!split.length && combined.invalid) {
+      if (matched.length) skipped++;
+      continue;
+    }
     const base=split.length ? split : [combined.formulas].filter(Boolean);
     const additions=get('가') || combined.additions || '';
     const removals=get('감') || combined.removals || '';
     const {addedFormulas}=parsePrescriptionAdditions(additions,name => dictionary.has(name));
     const parts=base.flatMap(value => dictionary.has(compact(value)) ? [value] : value.normalize('NFKC').split(/[+,、]/));
     const keys=[...new Set([...parts,...addedFormulas].map(compact))];
-    if (!keys.length || keys.some(name => !name || !dictionary.has(name))) { skipped++; continue; }
+    if (!keys.length || keys.some(name => !name || !dictionary.has(name))) {
+      if (matched.length) skipped++;
+      continue;
+    }
     const components=keys.map(name=>dictionary.get(name)!).sort();
+    if (!matched.length) {
+      const gradeKey=({좋음:'good',보통:'neutral',나쁨:'bad'} as const)[v];
+      otherTargets.all.total++;
+      otherTargets.all[gradeKey]++;
+      for (const formula of components) {
+        const counts=otherTargets.byFormula.get(formula)??emptyCounts();
+        counts.total++;
+        counts[gradeKey]++;
+        otherTargets.byFormula.set(formula,counts);
+      }
+      continue;
+    }
     const groupKey=JSON.stringify(components);
     const group:Group=groups.get(groupKey)??{components,contexts:new Map(),기록:0,좋음:0,보통:0,나쁨:0,상세기록:0,상세미기록:0,상세해석불가:0,가감기록:0,targetImproved:0,targetCaution:0,details:new Map(),notes:new Map()};
     group.기록++;
@@ -256,7 +277,7 @@ export function clinicalEvidence(rows: SheetRows, catalog: SheetRows, query: str
     else {
       group.상세기록++;
       const clauses=feedbackClauses(detail);
-      const findings=summarizeFeedback(clauses,targets,v);
+      const findings=summarizeFeedback(clauses,matched,v,targets.length>1);
       context.feedback=findings.map(([,finding])=>finding);
       const targetFindings=context.feedback.filter(f=>f.대상==='검색 증상' || f.대상.startsWith('검색 증상: '));
       // Count each row once per signal, even when the feedback repeats a finding.
@@ -286,6 +307,7 @@ export function clinicalEvidence(rows: SheetRows, catalog: SheetRows, query: str
   return {
     targets, groups:[...groups.values()].map(g=>({...g,formula:g.components.join(' + '),contexts:[...g.contexts.values()],details:[...g.details.values()],notes:[...g.notes.values()]})), skipped, excluded,
     [guideHistoryKey]: guideUseHistory(rows, catalog, tsumuraMonographs),
+    [otherTargetUsageKey]: otherTargets,
   };
 }
 
@@ -333,10 +355,18 @@ export function componentEvidence(clinic: ReturnType<typeof clinicalEvidence>) {
       components.set(formula,component);
     }
   }
-  return [...components.values()].map(component=>({
-    ...component,
-    absent:difference(all,component.included),
-    combined:difference(component.included,component.solo),
-    partners:[...component.partners.values()].map(partner=>({...partner,withoutPartner:difference(component.included,partner.withPartner)})),
-  }));
+  const background=clinic[otherTargetUsageKey];
+  return [...components.values()].map(component=>{
+    const groups=component.groupIds.map(id=>clinic.groups[id-1]);
+    const otherIncluded=background.byFormula.get(component.formula)??emptyCounts();
+    return {
+      ...component,
+      absent:difference(all,component.included),
+      combined:difference(component.included,component.solo),
+      targetImproved:groups.reduce((total,g)=>total+g.targetImproved,0),
+      targetCaution:groups.reduce((total,g)=>total+g.targetCaution,0),
+      otherTargets:{included:otherIncluded,absent:difference(background.all,otherIncluded)},
+      partners:[...component.partners.values()].map(partner=>({...partner,withoutPartner:difference(component.included,partner.withPartner)})),
+    };
+  });
 }
