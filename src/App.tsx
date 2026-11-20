@@ -25,6 +25,13 @@ import { initialBriefing } from './constants';
 
 type AppMode = 'INITIAL' | 'FOLLOW_UP' | 'RECIPE' | 'SEARCH';
 
+const mobileModes: {mode: AppMode; label: string}[] = [
+  {mode: 'INITIAL', label: '초진 차트'},
+  {mode: 'FOLLOW_UP', label: '처방 재평가'},
+  {mode: 'RECIPE', label: '처방 레시피'},
+  {mode: 'SEARCH', label: '증상별 처방 검색'},
+];
+
 function restoreAppMode(uid: string | null): AppMode {
   try {
     const mode = scopedStorage(localStorage, uid).getItem('appMode');
@@ -144,50 +151,34 @@ function MainApp() {
           </button>
         </div>
 
-        <Header activeTab={activeTab} setActiveTab={setActiveTab} showPatientTabs={appMode === 'INITIAL' || appMode === 'FOLLOW_UP'} onResetAll={() => setIsGlobalResetModalOpen(true)} />
-        
-        {/* Mobile App Mode Toggle */}
-        <div className="grid grid-cols-2 gap-2 mb-6 lg:hidden">
-          <button 
-            onClick={() => setAppMode('INITIAL')}
-            className={`py-3 px-2 border-2 border-primary font-bold text-sm transition-colors flex items-center justify-center touch-target ${appMode === 'INITIAL' ? 'bg-accent text-primary shadow-[4px_4px_0px_0px_rgba(85,44,36,1)]' : 'bg-white text-primary'}`}
-          >
-            초진 차트
-          </button>
-          <button 
-            onClick={() => setAppMode('FOLLOW_UP')}
-            className={`py-3 px-2 border-2 border-primary font-bold text-sm transition-colors flex items-center justify-center touch-target ${appMode === 'FOLLOW_UP' ? 'bg-accent text-primary shadow-[4px_4px_0px_0px_rgba(85,44,36,1)]' : 'bg-white text-primary'}`}
-          >
-            처방 재평가
-          </button>
-          <button
-            onClick={() => setAppMode('RECIPE')}
-            className={`col-span-2 py-3 px-2 border-2 border-primary font-bold text-base transition-colors flex items-center justify-center touch-target ${appMode === 'RECIPE' ? 'bg-accent text-primary shadow-[4px_4px_0px_0px_rgba(85,44,36,1)]' : 'bg-white text-primary'}`}
-          >
-            처방 레시피
-          </button>
-          <button
-            onClick={() => setAppMode('SEARCH')}
-            className={`col-span-2 py-3 px-2 border-2 border-primary font-bold text-base transition-colors flex items-center justify-center touch-target ${appMode === 'SEARCH' ? 'bg-accent text-primary shadow-[4px_4px_0px_0px_rgba(85,44,36,1)]' : 'bg-white text-primary'}`}
-          >
-            증상별 처방 검색
-          </button>
-          <button 
-            onClick={logout}
-            className="py-3 px-2 border-2 border-primary font-bold text-sm transition-colors bg-white text-primary flex items-center justify-center touch-target col-span-1"
-            title="로그아웃"
-          >
-            로그아웃
-          </button>
-          {isAdmin && (
-            <button 
-              onClick={() => navigate('/admin')}
-              className="py-3 px-2 border-2 border-primary font-bold text-sm transition-colors bg-white text-primary flex items-center justify-center touch-target col-span-1"
+        <Header
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
+          showPatientTabs={appMode === 'INITIAL' || appMode === 'FOLLOW_UP'}
+          onResetAll={() => setIsGlobalResetModalOpen(true)}
+          mobileActions={<>
+            {isAdmin && (
+              <button type="button" onClick={() => navigate('/admin')} className="touch-target px-2">관리</button>
+            )}
+            <button type="button" onClick={logout} className="touch-target px-2">로그아웃</button>
+          </>}
+        />
+
+        <nav aria-label="진료 메뉴" className="grid grid-cols-2 gap-2 mb-5 sm:grid-cols-4 lg:hidden">
+          {mobileModes.map(({mode, label}) => (
+            <button
+              key={mode}
+              type="button"
+              aria-pressed={appMode === mode}
+              onClick={() => setAppMode(mode)}
+              className={`touch-target min-w-0 border-2 border-primary px-2 py-2 text-sm font-bold break-keep focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary ${
+                appMode === mode ? 'bg-accent shadow-[2px_2px_0px_0px_rgba(85,44,36,1)]' : 'bg-white'
+              }`}
             >
-              관리
+              {label}
             </button>
-          )}
-        </div>
+          ))}
+        </nav>
 
         {appMode === 'INITIAL' ? (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
