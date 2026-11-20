@@ -1,4 +1,4 @@
-import { RecipeError } from './prescriptionRecipe.ts';
+import { combinedParts, parsePrescriptionAdditions, RecipeError } from './prescriptionRecipe.ts';
 import type { SheetRows } from './prescriptionRecipe.ts';
 
 const compact = (value: unknown) => String(value ?? '').normalize('NFKC').replace(/\s+/g, '').toLowerCase();
@@ -166,13 +166,15 @@ function summarizeFeedback(clauses:string[], term:string, grade:Grade) {
 }
 
 type ClinicalNote={평가:Grade,내용:string[],건수:number};
-type Group = {기록:number, 좋음:number, 보통:number, 나쁨:number, 상세기록:number, 상세미기록:number, 상세해석불가:number, 가감기록:number, details: Map<string, Finding & {건수:number}>, notes:Map<string,ClinicalNote>};
+type Group = {기록:number, 좋음:number, 보통:number, 나쁨:number, 상세기록:number, 상세미기록:number, 상세해석불가:number, 가감기록:number, targetImproved:number, targetCaution:number, details: Map<string, Finding & {건수:number}>, notes:Map<string,ClinicalNote>};
+const cautionCourses = new Set(['호전 없음','불변·잔존','악화','재발']);
 export function clinicalEvidence(rows: SheetRows, catalog: SheetRows, query: string) {
   const headers = (rows[0] ?? []).map(compact);
   const idx = (name: string) => headers.indexOf(compact(name));
-  for (const name of ['성함','증상','처방','효과','효과(자세히)']) {
+  for (const name of ['성함','증상','효과','효과(자세히)']) {
     if (idx(name) < 0) throw new RecipeError('환자 시트의 열 이름을 확인해주세요.');
   }
+  if (idx('처방') < 0 && idx('처방 조합') < 0) throw new RecipeError('환자 시트의 처방 열을 확인해주세요.');
   const term=compact(query);
   const names=new Set(rows.slice(1).map(row=>compact(row[idx('성함')])).filter(n=>n.length>=2));
   if (!/^[가-힣a-z0-9-]{2,30}$/.test(term) || !/[가-힣a-z]/.test(term) || /[0-9]{3}/.test(term) || [...names].some(n=>term.includes(n))) {
@@ -199,19 +201,30 @@ export function clinicalEvidence(rows: SheetRows, catalog: SheetRows, query: str
       continue;
     }
     const split=['처방','처방2','처방3'].map(get).filter(Boolean);
-    const parts=(split.length?split:[get('처방 조합')]).flatMap(x=>x.split(/[+,]/)).map(compact);
-    if(parts.some(x=>!x || !dictionary.has(x))){skipped++;continue;}
-    const formula=parts.map(x=>dictionary.get(x)).sort().join(' + ');
-    const group:Group=groups.get(formula)??{기록:0,좋음:0,보통:0,나쁨:0,상세기록:0,상세미기록:0,상세해석불가:0,가감기록:0,details:new Map(),notes:new Map()};
+    const combined=combinedParts(get('처방 조합'));
+    if (!split.length && combined.invalid) { skipped++; continue; }
+    const base=split.length ? split : [combined.formulas].filter(Boolean);
+    const additions=get('가') || combined.additions || '';
+    const removals=get('감') || combined.removals || '';
+    const {addedFormulas}=parsePrescriptionAdditions(additions,name => dictionary.has(name));
+    const parts=base.flatMap(value => dictionary.has(compact(value)) ? [value] : value.normalize('NFKC').split(/[+,、]/));
+    const keys=[...new Set([...parts,...addedFormulas].map(compact))];
+    if (!keys.length || keys.some(name => !name || !dictionary.has(name))) { skipped++; continue; }
+    const formula=keys.map(name=>dictionary.get(name)!).sort().join(' + ');
+    const group:Group=groups.get(formula)??{기록:0,좋음:0,보통:0,나쁨:0,상세기록:0,상세미기록:0,상세해석불가:0,가감기록:0,targetImproved:0,targetCaution:0,details:new Map(),notes:new Map()};
     group.기록++;
     group[v]++;
-    if ([get('가'),get('감')].some(x=>x && !/^(?:없음|없다|해당없음|[-–—])$/.test(compact(x)))) group.가감기록++;
+    if ([additions,removals].some(x=>x && !/^(?:없음|없다|해당없음|[-–—])$/.test(compact(x)))) group.가감기록++;
     const detail=get('효과(자세히)');
     if (!detail || /^[-–—]$/.test(detail)) group.상세미기록++;
     else {
       group.상세기록++;
       const clauses=feedbackClauses(detail);
       const findings=summarizeFeedback(clauses,term,v);
+      const targetFindings=findings.map(([,finding])=>finding).filter(f=>f.대상==='검색 증상');
+      // Count each row once per signal, even when the feedback repeats a finding.
+      if (targetFindings.some(f=>f.경과==='호전' || (f.경과==='수치 감소' && f.정도.startsWith('강도 ')))) group.targetImproved++;
+      if (targetFindings.some(f=>cautionCourses.has(f.경과) || (f.경과==='수치 증가' && f.정도.startsWith('강도 ')))) group.targetCaution++;
       const note=safeClinicalClauses(clauses,names);
       if(note.length) {
         const key=JSON.stringify([v,note]), existing=group.notes.get(key);
@@ -228,4 +241,35 @@ export function clinicalEvidence(rows: SheetRows, catalog: SheetRows, query: str
     groups.set(formula,group);
   }
   return {groups:Array.from(groups,([formula,g])=>({...g,formula,details:[...g.details.values()],notes:[...g.notes.values()]})),skipped,excluded};
+}
+
+export type RankedPrescription = {
+  formula: string;
+  good: number;
+  total: number;
+  observedPercent: number;
+  estimatedPercent: number;
+  targetImproved: number;
+  targetCaution: number;
+};
+
+export function comparePrescriptionEvidence(a: RankedPrescription, b: RankedPrescription): number {
+  // Compare the exact fractions before any display rounding.
+  return (b.good + 1) * (a.total + 2) - (a.good + 1) * (b.total + 2)
+    || a.targetCaution * b.total - b.targetCaution * a.total
+    || b.targetImproved * a.total - a.targetImproved * b.total
+    || b.total - a.total;
+}
+
+export function rankPrescriptions(clinic: ReturnType<typeof clinicalEvidence>): RankedPrescription[] {
+  const percent = (numerator: number, denominator: number) => Math.round(1000 * numerator / denominator) / 10;
+  return clinic.groups.filter(group => group.좋음 > 0).map(group => ({
+    formula: group.formula,
+    good: group.좋음,
+    total: group.기록,
+    observedPercent: percent(group.좋음, group.기록),
+    estimatedPercent: percent(group.좋음 + 1, group.기록 + 2),
+    targetImproved: group.targetImproved,
+    targetCaution: group.targetCaution,
+  })).sort((a,b) => comparePrescriptionEvidence(a,b) || a.formula.localeCompare(b.formula,'ko'));
 }

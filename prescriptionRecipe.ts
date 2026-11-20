@@ -35,8 +35,23 @@ const ephedraName = (value: unknown) => key(value) === '마황고용량' ? '마�
 const cleanHeader = (value: unknown) => key(value);
 const splitFormulas = (value: string) => value.split(/[+＋]/).map(text).filter(Boolean);
 const isEmptyModifier = (value: string) => !value || /^(?:없음|없다|해당없음|[-–—])$/.test(value.trim());
+const modifierParts = (value: string) => value.normalize('NFKC').split(/[,、;\n]/).map(text).filter(Boolean);
 
-function combinedParts(value: string) {
+export function parsePrescriptionAdditions(value: string, hasFormula: (formulaKey: string) => boolean) {
+  const addedFormulas: string[] = [];
+  const herbAdditions: string[] = [];
+  if (!isEmptyModifier(value)) {
+    for (const part of modifierParts(value)) {
+      // Keep a registered name intact. A '+' may also belong to a herb dose.
+      const formulas = hasFormula(key(part)) ? [part] : splitFormulas(part);
+      if (formulas.length && formulas.every(formula => hasFormula(key(formula)))) addedFormulas.push(...formulas);
+      else herbAdditions.push(part);
+    }
+  }
+  return {addedFormulas, herbAdditions};
+}
+
+export function combinedParts(value: string) {
   let formulas = value.normalize('NFKC').trim();
   const modifiers: { additions?: string; removals?: string } = {};
   let invalid = false;
@@ -191,20 +206,10 @@ export function calculatePrescriptionRecipe(patient: PrescriptionPatient, herbRo
   const herbIndex = headers.indexOf('약재명');
   const amountIndex = headers.indexOf('함량');
   if ([formulaIndex, herbIndex, amountIndex].some(index => index < 0)) throw new RecipeError('약재 시트의 처방명·약재명·함량 열을 확인해주세요.');
-  const modifierParts = (value: string) => value.normalize('NFKC').split(/[,、;\n]/).map(text).filter(Boolean);
   const knownFormulas = new Set(herbRows.slice(1).map(row => key(row[formulaIndex])).filter(Boolean));
-  const addedFormulas: string[] = [];
-  const herbAdditions: string[] = [];
-  if (!isEmptyModifier(patient.additions)) {
-    const parts = modifierParts(patient.additions);
-    if (!parts.length) throw new RecipeError('가(추가 처방·약재) 표기를 확인해주세요.');
-    for (const part of parts) {
-      // Match the complete catalog name first. Only split '+' when every item
-      // is a registered formula, so herb additions such as '감초 +2g' stay intact.
-      const formulas = knownFormulas.has(key(part)) ? [part] : splitFormulas(part);
-      if (formulas.length && formulas.every(formula => knownFormulas.has(key(formula)))) addedFormulas.push(...formulas);
-      else herbAdditions.push(part);
-    }
+  const {addedFormulas, herbAdditions} = parsePrescriptionAdditions(patient.additions, formula => knownFormulas.has(formula));
+  if (!isEmptyModifier(patient.additions) && !addedFormulas.length && !herbAdditions.length) {
+    throw new RecipeError('가(추가 처방·약재) 표기를 확인해주세요.');
   }
   // Merge every formula before applying herb modifiers, regardless of their
   // order in '가'. Keep the original patient fields for display and validation.
