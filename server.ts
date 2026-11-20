@@ -1,4 +1,5 @@
 import { clinicalEvidence } from './prescriptionSearch.ts';
+import { readPrivateBooks } from './privateBookCorpus.ts';
 import { recommendPrescriptions } from './prescriptionRecommendations.ts';
 import dotenv from 'dotenv';
 dotenv.config();
@@ -453,9 +454,11 @@ app.post('/api/prescription-search', async (req,res) => {
     if (typeof query !== 'string' || query.length > 60 || !['gpt-6.2-astra','gemini-4-argon'].includes(model)) {
       throw new RecipeError('증상명과 판단 모델을 확인해주세요.',400);
     }
-    const [patients, catalog] = await Promise.all([readPrescriptionSheet(token,"'한약환자'!A1:W"),readPrescriptionSheet(token,"'약재'!A1:D")]);
+    const [patients, catalog, books] = await Promise.all([
+      readPrescriptionSheet(token, "'한약환자'!A1:W"), readPrescriptionSheet(token, "'약재'!A1:D"), readPrivateBooks(token),
+    ]);
     const clinic = clinicalEvidence(patients,catalog,query);
-    const recommendation = await recommendPrescriptions(clinic, query, model);
+    const recommendation = await recommendPrescriptions(clinic, query, model, undefined, books);
     // Already-open tabs render a plain text result and expect an array of legacy rankings.
     if (!req.body.view) {
       const lines = recommendation.recommendations.map(item =>

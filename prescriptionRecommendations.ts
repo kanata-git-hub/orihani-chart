@@ -5,6 +5,7 @@ import { prescriptionSynthesisSchema } from './prescriptionSynthesisSchema.ts';
 import { guideHistoryKey, recommendFromGuide } from './guideSuggestions.ts';
 import { tsumuraMonographs } from './tsumuraMonographs.ts';
 import type { clinicalEvidence } from './prescriptionSearch.ts';
+import type { PrivateBookSource } from './privateBookCorpus.ts';
 
 type Clinic = ReturnType<typeof clinicalEvidence>;
 type Component = ReturnType<typeof componentEvidence>[number];
@@ -206,11 +207,13 @@ type Generator = typeof generateFollowUpResponse;
 // Older integrations can inject a single generator for clinic-only synthesis.
 // The regular authenticated search runs two independent analyses with the same chosen model.
 export async function recommendPrescriptions(clinic: Clinic, _query: string, model: SearchModel,
-  generators: Generator | {clinic: Generator, guide: Generator} = {clinic: generateFollowUpResponse, guide: generateFollowUpResponse}) {
+  generators: Generator | {clinic: Generator, guide: Generator} = {clinic: generateFollowUpResponse, guide: generateFollowUpResponse},
+  books?: PrivateBookSource) {
   if (typeof generators === 'function') return recommendFromClinic(clinic, model, generators);
   const [synthesis, guideSuggestions] = await Promise.all([
     recommendFromClinic(clinic, model, generators.clinic),
-    recommendFromGuide(clinic[guideHistoryKey], clinic.targets, tsumuraMonographs, model, generators.guide),
+    recommendFromGuide(clinic[guideHistoryKey], clinic.targets, tsumuraMonographs, model, generators.guide, books?.corpus),
   ]);
+  if (books?.notice) guideSuggestions.bookNotice = books.notice;
   return {...synthesis, guideSuggestions};
 }

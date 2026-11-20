@@ -23,6 +23,12 @@ const additionLabels = {
   hypothesis: '함께 쓴 기록 없는 제안',
 };
 
+const guideEvidenceLabels = {
+  book_direct: '교재에 직접 수록',
+  book_pattern: '변증상 후보',
+  monograph: '제제 적응증',
+};
+
 function EvidenceList({ids, clinic}: {ids: number[]; clinic: Clinic}) {
   return <ul className="list-disc space-y-1 pl-5">{ids.map(id => {
     const group = clinic.groups[id - 1];
@@ -122,20 +128,30 @@ function ClinicalRecords({clinic, model}: {clinic: Clinic; model?: string}) {
 
 function GuideResults({guide}: {guide?: GuideSuggestions}) {
   if (!guide || guide.status !== 'ok' || !guide.recommendations.length) {
-    return <p className="py-2 text-sm">{guide?.message || (guide?.status === 'no_matches'
+    return <div className="space-y-1 py-2 text-sm"><p>{guide?.message || (guide?.status === 'no_matches'
       ? '이 증상에 맞는 새 처방이나 조합을 자료에서 찾지 못했습니다.'
-      : '쯔무라 자료 추천을 불러오지 못했습니다.')}</p>;
+      : '쯔무라 자료 추천을 불러오지 못했습니다.')}</p>
+      {guide?.bookNotice && <p>{guide.bookNotice}</p>}
+    </div>;
   }
   return <>
+    {guide.bookNotice && <p className="py-2 text-sm leading-snug">{guide.bookNotice}</p>}
     <ol className="divide-y divide-primary/15">
       {guide.recommendations.map(candidate => <li key={candidate.formula}>
         <details className="group/rank">
-          <RankSummary rank={candidate.rank} formula={candidate.formula} hint={candidate.conditionSummary || candidate.indications}/>
+          <RankSummary rank={candidate.rank} formula={candidate.formula}
+            hint={[candidate.evidenceKind && guideEvidenceLabels[candidate.evidenceKind], candidate.conditionSummary || candidate.indications].filter(Boolean).join(' · ')}/>
           <div className="space-y-2 pb-3 text-base leading-normal">
             <p><strong>추천 이유</strong> · {candidate.reason}</p>
             {candidate.conditionSummary && candidate.indications !== candidate.conditionSummary && <p><strong>적용 조건</strong> · {candidate.indications}</p>}
             {candidate.combinationRationale && <p><strong>합방을 검토할 이유</strong> · {candidate.combinationRationale}</p>}
             <p><strong>원내 사용 기록</strong> · {candidate.useHistory}</p>
+            {!!candidate.bookReferences?.length && <ul aria-label="교재 근거" className="space-y-2 border-l-2 border-primary/30 pl-2.5">
+              {candidate.bookReferences.map((source, index) => <li key={source.pageId + '-' + index}>
+                <p className="text-sm font-semibold">{[source.book, source.section, `문서 ${source.page}쪽`].filter(Boolean).join(' · ')}</p>
+                <p className="mt-0.5 text-sm leading-normal">{source.excerpt}</p>
+              </li>)}
+            </ul>}
             {candidate.references.map(reference => <div key={reference.url} className="border-l-2 border-primary/30 pl-2.5">
               <a href={reference.url} target="_blank" rel="noreferrer" className="inline-flex min-h-11 items-center font-medium underline underline-offset-2">{reference.title}</a>
               <p><strong>적응증 요약</strong> · {reference.excerpt}</p>

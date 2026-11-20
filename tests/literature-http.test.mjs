@@ -3,6 +3,39 @@ import { once } from 'node:events';
 import { createServer } from 'node:http';
 import test from 'node:test';
 import express from 'express';
+import { readPrivateBooks } from '../privateBookCorpus.ts';
+
+test('book access follows each Google account and never reuses another account\'s text', async t => {
+  const spreadsheetId = 'synthetic-book-sheet';
+  const original = process.env.PRESCRIPTION_BOOK_SHEET_ID;
+  process.env.PRESCRIPTION_BOOK_SHEET_ID = spreadsheetId;
+  t.after(() => {
+    if (original === undefined) delete process.env.PRESCRIPTION_BOOK_SHEET_ID;
+    else process.env.PRESCRIPTION_BOOK_SHEET_ID = original;
+  });
+  const row = ['B1', '가상도서', '증상별', '2', '가상 시험용 본문입니다.', '가상 증상'];
+  let reads = 0;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    assert.equal(url, 'https://sheets.googleapis.com/v4/spreadsheets/' + spreadsheetId + '/values/Books!A2:F');
+    assert.equal(options.method ?? 'GET', 'GET');
+    assert.equal(options.redirect, 'error');
+    const token = new Headers(options.headers).get('authorization');
+    reads++;
+    if (token === 'Bearer denied') return Response.json({error: 'upstream-private'}, {status: 403});
+    if (token === 'Bearer owner') return Response.json({values: [row]});
+    return Response.json({values: [row, row]});
+  });
+  assert.deepEqual((await readPrivateBooks('owner')).corpus.pages, [{
+    id: 'B1', book: '가상도서', section: '증상별', page: 2, text: row[4], topics: row[5],
+  }]);
+  for (const token of ['denied', 'invalid-data']) {
+    const result = await readPrivateBooks(token);
+    assert.equal(result.corpus, undefined);
+    assert.match(result.notice, /쯔무라 제제 설명서/);
+    assert.doesNotMatch(JSON.stringify(result), /upstream-private|가상 시험용/);
+  }
+  assert.equal(reads, 3);
+});
 
 test('authenticated search returns independent, source-linked rankings with the selected model', async t => {
   const realFetch = globalThis.fetch;
@@ -23,7 +56,8 @@ test('authenticated search returns independent, source-linked rankings with the 
     listener = createServer(this).listen(0, '127.0.0.1');
     return listener;
   });
-  const activeEnv = { NODE_ENV: 'production', OPENAI_API_KEY: 'synthetic', GEMINI_API_KEY: 'synthetic' };
+  const activeEnv = { NODE_ENV: 'production', OPENAI_API_KEY: 'synthetic', GEMINI_API_KEY: 'synthetic',
+    PRESCRIPTION_BOOK_SHEET_ID: 'synthetic-book-sheet' };
   const saved = Object.fromEntries(Object.keys(activeEnv).map(key => [key, process.env[key]]));
   Object.assign(process.env, activeEnv);
   t.after(async () => {
@@ -42,6 +76,9 @@ test('authenticated search returns independent, source-linked rankings with the 
     if (url.includes('sheets.googleapis.com')) {
       assert.equal(new Headers(init.headers).get('Authorization'), 'Bearer synthetic-sheet-token');
       assert.equal(init.method || 'GET', 'GET');
+      if (url.includes('/synthetic-book-sheet/values/Books!A2:F')) {
+        return Response.json({error: 'upstream-private'}, {status: 403});
+      }
       if (url.includes("'한약환자'!A1:W")) return Response.json({values: rows});
       assert.ok(url.includes("'약재'!A1:D"));
       return Response.json({values: catalog});
@@ -101,6 +138,7 @@ test('authenticated search returns independent, source-linked rankings with the 
     assert.equal(clinicOption.study.otherTargets.included.neutral, 1);
     assert.ok(result.shortlistNote);
     assert.equal(result.guideSuggestions.status, 'ok');
+    assert.match(result.guideSuggestions.bookNotice, /임상 서적을 열 수 없어/);
     const [option] = result.guideSuggestions.recommendations;
     assert.equal(option.formula, '안중산');
     assert.equal(option.rank, 1);
