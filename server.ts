@@ -1,3 +1,5 @@
+import { clinicalEvidence } from './prescriptionSearch.ts';
+import { CLINIC_PRESCRIPTION_GUIDANCE } from './clinicPrescriptionGuidance.ts';
 import dotenv from 'dotenv';
 dotenv.config();
 import { requireUser } from './serverSecurity.ts';
@@ -442,6 +444,41 @@ function recipeErrorResponse(error: unknown, res: express.Response) {
   // Do not log upstream request objects: they contain the Google access token.
   return res.status(502).json({ error: '처방 정보를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.' });
 }
+
+app.post('/api/prescription-search', async (req,res) => {
+  res.set('Cache-Control','no-store');
+  try {
+    const token = recipeToken(req.body);
+    const { query, model } = req.body;
+    if (typeof query !== 'string' || query.length > 60 || !['gpt-6.2-astra','gemini-4-argon'].includes(model)) {
+      throw new RecipeError('증상명과 판단 모델을 확인해주세요.',400);
+    }
+    const [patients, catalog] = await Promise.all([readPrescriptionSheet(token,"'한약환자'!A1:W"),readPrescriptionSheet(token,"'약재'!A1:D")]);
+    const clinic = clinicalEvidence(patients,catalog,query);
+    if (!clinic.groups.length) {
+      return res.json({clinic, text:'검색한 증상에 대해 좋음·보통·나쁨으로 평가된 처방 기록이 없습니다.'});
+    }
+    if (!clinic.groups.some(group => group.details.length || group.notes.length)) {
+      return res.json({clinic, text:'시트의 등급은 아래와 같습니다. 상세 피드백에서 경과를 확인할 수 없어 효과의 정도와 처방 간 우열은 판단하기 어렵습니다.'});
+    }
+    const prompt = [
+      '원장이 검색한 증상에 대해 시트에서 관찰된 처방과 합방을 비교한다. 몇 건을 썼는지보다 어떤 증상이 얼마나, 언제까지 달라졌는지가 우선이다.',
+      'V열 등급과 같은 기록의 W열 상세 경과를 함께 읽어라. 원장님의 평가가 좋음이어도 상세에 남은 주증상, 다른 증상만의 호전, 악화, 재발, 부작용이 있으면 그대로 반영한다. 기록의 등급 자체를 바꾸지 않는다.',
+      'notes는 같은 평가 기록에 함께 쓰인 비식별 임상 문구를 원래 순서로 모은 것이다. 해당 문구를 먼저 읽어라. 숨긴 부분은 복원하거나 원인으로 추측하지 말고, 자동 추출한 details가 문맥과 맞지 않으면 문맥을 우선한다. 두 목록은 같은 기록을 표현한 것이므로 건수를 더하지 않는다.',
+      '상세가 없거나 해석되지 않은 기록은 등급 분포에만 포함한다. 호전 폭이나 원인을 추정하지 말고, 대상 증상이나 정도가 불명확하면 그 한계를 표시하라. 여러 상세 항목이 같은 처방 기록에서 나올 수 있다. 항목 수를 환자 수나 독립 사례 수로 합산하지 않는다.',
+      '후보별 판단 이유에 상세 경과와 해당 등급을 제시하라. 시트 관찰을 우선하고, 사례가 적거나 서로 상충하면 순위를 단정하지 않는다. 합방·가감 결과를 단일 처방의 효과로 돌리지 않는다.',
+      '아래 원칙은 처방 재평가실의 원내 지침이다. 지침에 따른 해석과 시트에서 확인한 결과를 구분한다. 쯔무라 원문을 검색·인용했다고 쓰지 않는다.',
+      CLINIC_PRESCRIPTION_GUIDANCE,
+      JSON.stringify({증상: query.trim(), 평가대상: clinic.groups}),
+    ].join('\n\n');
+    try {
+      const result = await generateFollowUpResponse(prompt,model === 'gpt-6.2-astra'?'gpt-astra':'gemini',{exactSearchModel:model});
+      return res.json({clinic,text:result.text,model:result.model});
+    } catch {
+      return res.json({clinic,text:'선택한 모델에서 응답을 받지 못했습니다. 아래는 검색된 근거입니다.'});
+    }
+  } catch(error) { return recipeErrorResponse(error,res); }
+});
 
 app.post('/api/prescription-patients', async (req, res) => {
   res.set('Cache-Control', 'no-store');

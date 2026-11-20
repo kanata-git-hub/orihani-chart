@@ -18,6 +18,7 @@ interface Dependencies {
   geminiGenerate?: (model: string, prompt: string, key: string) => Promise<string>;
   wait?: (milliseconds: number) => Promise<void>;
   signal?: AbortSignal;
+  exactSearchModel?: 'gpt-6.2-astra' | 'gemini-4-argon';
 }
 
 export async function generateFollowUpResponse(prompt: unknown, requestedEngine?: unknown, deps: Dependencies = {}) {
@@ -25,6 +26,7 @@ export async function generateFollowUpResponse(prompt: unknown, requestedEngine?
   if (engine !== 'gemini' && engine !== 'gpt-astra') throw new FollowUpError('INVALID_ENGINE', 400);
   if (typeof prompt !== 'string' || !prompt.trim()) throw new FollowUpError('INVALID_PROMPT', 400);
   const env = deps.env ?? process.env;
+  const openaiModel = deps.exactSearchModel === 'gpt-6.2-astra' ? deps.exactSearchModel : ASTRA_MODEL;
 
   if (engine === 'gpt-astra') {
     if (!env.OPENAI_API_KEY) throw new FollowUpError('OPENAI_NOT_CONFIGURED', 503);
@@ -34,7 +36,7 @@ export async function generateFollowUpResponse(prompt: unknown, requestedEngine?
       response = await (deps.request ?? fetch)('https://api.openai.com/v1/responses', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${env.OPENAI_API_KEY}` },
-        body: JSON.stringify({ model: ASTRA_MODEL, input: prompt, store: false,
+        body: JSON.stringify({ model: openaiModel, input: prompt, store: false,
           reasoning: { effort: 'medium' }, max_output_tokens: 16384 }),
         signal: deps.signal ? AbortSignal.any([deps.signal, timeout]) : timeout,
         redirect: 'error',
@@ -59,7 +61,7 @@ export async function generateFollowUpResponse(prompt: unknown, requestedEngine?
     const text = parts.filter((part: any) => part?.type === 'output_text' && typeof part.text === 'string')
       .map((part: any) => part.text).join('\n').trim();
     if (!text) throw new FollowUpError('EMPTY_AI_RESPONSE');
-    return { text, engine, model: typeof raw.model === 'string' ? raw.model : ASTRA_MODEL };
+    return { text, engine, model: typeof raw.model === 'string' ? raw.model : openaiModel };
   }
 
   const key = env.GEMINI_API_KEY;
@@ -72,7 +74,7 @@ export async function generateFollowUpResponse(prompt: unknown, requestedEngine?
   });
   const wait = deps.wait ?? (async (milliseconds: number) => { await new Promise(resolve => setTimeout(resolve, milliseconds)); });
   let lastRateLimit = false;
-  for (const model of GEMINI_MODELS) {
+  for (const model of deps.exactSearchModel === 'gemini-4-argon' ? [deps.exactSearchModel] : GEMINI_MODELS) {
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const text = await generate(model, prompt, key);

@@ -17,6 +17,9 @@ COPY --from=build /app/serverSecurity.ts ./serverSecurity.ts
 COPY --from=build /app/followUpEngine.ts ./followUpEngine.ts
 COPY --from=build /app/prescriptionRecipe.ts ./prescriptionRecipe.ts
 
+COPY --from=build /app/prescriptionSearch.ts ./prescriptionSearch.ts
+COPY --from=build /app/clinicPrescriptionGuidance.ts ./clinicPrescriptionGuidance.ts
+
 ENV NODE_ENV=production
 
 EXPOSE 8080
