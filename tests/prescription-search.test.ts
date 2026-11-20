@@ -120,6 +120,38 @@ test('combining two separately supported formulas is labeled a hypothesis; mixin
   }
 });
 
+test('rank summaries use the chosen evidence basis and verified row counts; a short list explains the omission',async()=>{
+  const {clinic,choice}=synthesisExample();
+  const note='다른 후보들은 같은 조합에서만 반복돼 기본 처방을 따로 고르기 어렵습니다.';
+  for (const [rankBasis,expected] of [
+    ['recurrence','서로 다른 합방 2종에서 좋음 기록'],
+    ['targetFeedback','상세에 소화불량 호전 명시 1건'],
+    ['contrast','전체 평가 좋음 · 포함 2/3건, 미포함 5/6건'],
+  ]) {
+    const result=await recommendPrescriptions(clinic,'소화불량','gpt-6.2-astra',async()=>({
+      text:JSON.stringify({recommendations:[{...choice,rankBasis}],shortlistNote:note}),
+      model:'gpt-6.2-astra',engine:'gpt-astra',
+    }));
+    assert.equal(result.recommendations[0].headline,expected);
+    assert.equal(result.shortlistNote,note);
+  }
+  const limited=summarize(sample('좋음',''),sample('좋음',''));
+  const result=await recommendPrescriptions(limited,'피로','gemini-4-argon',async()=>({
+    text:JSON.stringify({recommendations:[{...choice,baseId:1,groupIds:[1],rankBasis:'solo',additions:[]}],shortlistNote:''}),
+    model:'gemini-4-argon',engine:'gemini',
+  }));
+  assert.equal(result.recommendations[0].headline,'무가감 단독 2건 중 2건 좋음');
+  assert.equal(result.recommendations[0].study.targetImproved,0);
+  assert.match(result.shortlistNote!,/긍정 근거.*1개/);
+  const withBackground=summarize(sample('좋음',''),sample('보통','','나처방'),
+    ['가상인','두통','나처방','','좋음',''],['가상인','요통','나처방','','좋음','']);
+  const compared=await recommendPrescriptions(withBackground,'피로','gpt-6.2-astra',async()=>({
+    text:JSON.stringify({recommendations:[{...choice,baseId:1,groupIds:[1],rankBasis:'backgroundUse',additions:[]}],shortlistNote:''}),
+    model:'gpt-6.2-astra',engine:'gpt-astra',
+  }));
+  assert.equal(compared.recommendations[0].headline,'사용 빈도 · 검색 목표 1/2건, 다른 목표 0/2건');
+});
+
 test('two members seen only in a three-formula regimen do not become an observed two-formula treatment',async()=>{
   const names=['가처방','나처방','다처방'];
   const clinic=clinicalEvidence([headers,sample('좋음','피로가 호전됨',names.join(' + '))],

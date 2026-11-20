@@ -15,6 +15,7 @@ const addition = object({
 });
 const recommendation = object({
   baseId: id,
+  rankBasis: { type: 'string', enum: ['solo', 'recurrence', 'targetFeedback', 'contrast', 'backgroundUse', 'overall'] },
   reason: sentence,
   limitation: sentence,
   guidance: sentence,
@@ -24,4 +25,5 @@ const recommendation = object({
 
 export const prescriptionSynthesisSchema = object({
   recommendations: { type: 'array', items: recommendation, maxItems: 3 },
+  shortlistNote: sentence,
 });

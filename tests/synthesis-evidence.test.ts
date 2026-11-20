@@ -75,3 +75,34 @@ test('multi-target matches preserve individual goals, co-symptoms, V and W attri
   }
   assert.throws(()=>clinicalEvidence(rows,catalog,'피로, 가상환자'));
 });
+
+test('compares background use with separate denominators and retains only aggregate data for other targets',()=>{
+  const clinic=clinicalEvidence([headers,
+    row('피로',['가처방'],'좋음'),
+    row('피로',['가처방','나처방'],'보통','피로는 호전됨. 피로는 다시 심해짐.'),
+    row('피로',['나처방'],'나쁨'),
+    row('두통',['가처방'],'좋음','개인정보가 든 문장'),
+    row('두통',['가처방','나처방'],'보통'),
+    row('요통',['다처방'],'좋음'),
+    row('',['가처방'],'좋음'),
+    row('요통',['미등록'],'좋음'),
+    ...['','미정','종결'].map(grade=>row('요통',['가처방'],grade)),
+  ],catalog,'피로');
+  const base=componentEvidence(clinic).find(c=>c.formula==='가처방')!;
+  assert.deepEqual(base.included,grades(1,1,0));
+  assert.deepEqual(base.absent,grades(0,0,1));
+  assert.deepEqual(base.otherTargets,{included:grades(1,1,0),absent:grades(1,0,0)});
+  assert.equal(base.targetImproved,1);
+  assert.equal(base.targetCaution,1);
+  assert.deepEqual(clinic.excluded,{미정:0,종결:0,결과미기록:0,기타:0});
+  assert.equal(clinic.skipped,0);
+  assert.doesNotMatch(JSON.stringify([clinic,base]),/개인정보가 든 문장|요통|미등록|다처방|가상환자/);
+});
+
+test('a change to a query term not among this row’s targets is not counted as target relief',()=>{
+  const clinic=clinicalEvidence([headers,row('피로',['가처방'],'보통','소화불량이 좋아짐')],
+    catalog,'피로, 소화불량');
+  assert.equal(clinic.groups[0].targetImproved,0);
+  assert.deepEqual(clinic.groups[0].contexts[0].targets,['피로']);
+  assert.equal(clinic.groups[0].contexts[0].feedback[0].대상,'동반·기타: 소화불량');
+});

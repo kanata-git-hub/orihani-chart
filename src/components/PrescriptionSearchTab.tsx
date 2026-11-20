@@ -11,6 +11,7 @@ type Result = {
   recommendations: PrescriptionRecommendation[];
   status: 'synthesized' | 'insufficient' | 'model-unavailable';
   text: string;
+  shortlistNote?: string;
   model?: string;
   clinic: Clinic;
   guideSuggestions?: GuideSuggestions;
@@ -29,37 +30,52 @@ function EvidenceList({ids, clinic}: {ids: number[]; clinic: Clinic}) {
   })}</ul>;
 }
 
+function RankSummary({rank, formula, hint}: {rank: number; formula: string; hint: string}) {
+  return <summary className="grid min-h-11 cursor-pointer list-none grid-cols-[auto_minmax(0,1fr)_auto] items-baseline gap-x-2 gap-y-0.5 rounded-sm py-2 leading-tight focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary [&::-webkit-details-marker]:hidden">
+    <span className="whitespace-nowrap text-sm font-medium">{rank}순위</span>
+    <strong className="min-w-0 text-base sm:text-lg">{formula}</strong>
+    <ChevronDown size={17} aria-hidden="true" className="self-center group-open/rank:rotate-180"/>
+    <span className="col-span-3 text-sm leading-snug text-primary/85">{hint}</span>
+  </summary>;
+}
+
 function BaseRecommendation({candidate, clinic, position}: {candidate: PrescriptionRecommendation; clinic: Clinic; position: number}) {
   const {base, study, additions} = candidate;
+  const fallbackSummary = `단독 ${study.solo.total}건 · 합방에 포함 ${study.combined.total}건`;
   return <li>
-    <details className="group/option">
-      <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 py-2 [&::-webkit-details-marker]:hidden">
-        <span className="shrink-0 text-sm">{position + 1}순위</span>
-        <strong className="min-w-0 flex-1">{base}</strong>
-        <ChevronDown size={18} aria-hidden="true" className="shrink-0 group-open/option:rotate-180"/>
-      </summary>
-      <div className="space-y-2 pb-2 text-sm leading-snug">
-        <p className="text-primary/80">시트 관찰 · {study.solo.total > 0 ? '단독 '+study.solo.total+'건' : '단독 사용 기록 없음'} · 합방 {study.regimenCount - (study.solo.total > 0 ? 1 : 0)}종 {study.combined.total}건
+    <details className="group/rank">
+      <RankSummary rank={position + 1} formula={base} hint={candidate.headline || fallbackSummary}/>
+      <div className="space-y-2.5 pb-3 text-base leading-normal">
+        <p className="text-sm text-primary/85"><strong>시트 관찰</strong> · {study.solo.total > 0 ? '단독 '+study.solo.total+'건' : '단독 사용 기록 없음'} · 합방 {study.regimenCount - (study.solo.total > 0 ? 1 : 0)}종 {study.combined.total}건
           {study.included.bad > 0 && <span className="font-medium text-red-800"> · 나쁨 {study.included.bad}건 포함</span>}
         </p>
-        <p><strong>{study.solo.total > 0 ? '기본 처방으로 보는 이유' : '합방 기록에서 추론한 이유'}</strong> · {candidate.reason}</p>
-        {additions.length === 0 && <p>이 후보에는 추가 합방 제안이 없습니다.</p>}
-        {additions.map(addition => <div key={addition.formulas.join('+')} className="border-l-2 border-primary/25 pl-2.5">
+        {candidate.headline !== candidate.reason && <p><strong>순위 판단</strong> · {candidate.reason}</p>}
+        {additions.map(addition => <div key={addition.formulas.join('+')} className="space-y-1 border-l-2 border-primary/25 pl-2.5">
           <p className="font-bold">합방 후보 · {addition.formulas.join(' + ')}</p>
-          <p className="text-primary/75">{additionLabels[addition.kind]}</p>
+          <p className="text-sm text-primary/85">{additionLabels[addition.kind]}</p>
           <p><strong>고려할 때</strong> · {addition.when}</p>
-          <p><strong>함께 쓰는 이유</strong> · {addition.why}</p>
+          <p><strong>보완을 기대하는 이유</strong> · {addition.why}</p>
         </div>)}
         <details className="border-t border-primary/10">
           <summary className="min-h-11 cursor-pointer py-2.5 font-medium">시트 근거와 해석 한계</summary>
           <div className="space-y-2 pb-2">
-            <table className="w-full text-right tabular-nums">
-              <caption className="pb-1 text-left font-medium">검색 증상이 기록된 사례</caption>
+            <table className="w-full text-right text-sm tabular-nums">
+              <caption className="pb-1 text-left font-medium">검색 증상이 기록된 처방의 전체 평가</caption>
               <thead><tr><th scope="col" className="text-left">처방 구성</th><th scope="col">좋음</th><th scope="col">보통</th><th scope="col">나쁨</th></tr></thead>
               <tbody>{([['단독',study.solo],['합방에 포함',study.combined],['기본 처방 미포함',study.absent]] as const).map(([label,count]) =>
                 <tr key={label}><th scope="row" className="text-left font-normal">{label}</th><td>{count.good}</td><td>{count.neutral}</td><td>{count.bad}</td></tr>)}
               </tbody>
             </table>
+            {typeof study.targetImproved === 'number' && typeof study.targetCaution === 'number' && <div>
+              <p className="font-medium">상세에 명시된 경과 · {clinic.targets.length > 1 ? '검색 증상 중 하나 이상' : '검색 증상'}</p>
+              <p className="text-sm leading-normal">이 처방 포함 {study.included.total}건 중 호전 기록 {study.targetImproved}건 · 불변·잔존·재발·악화 등 기록 {study.targetCaution}건.</p>
+              {study.targetImproved > 0 && study.targetCaution > 0 && <p className="text-sm">한 기록에 두 경과가 함께 적힐 수 있습니다.</p>}
+            </div>}
+            {study.otherTargets && <div>
+              <p className="font-medium">검색 증상을 포함하지 않은 다른 기록</p>
+              <div className="text-sm leading-normal">{([['이 처방 포함', study.otherTargets.included], ['이 처방 미포함', study.otherTargets.absent]] as const).map(([label, counts]) =>
+                <p key={label}>{label} · {counts.total ? `전체 평가 ${counts.total}건 중 좋음 ${counts.good}건` : '평가 기록 없음'}</p>)}</div>
+            </div>}
             {candidate.groupIds.length > 0 && <EvidenceList ids={candidate.groupIds} clinic={clinic}/>}
             {additions.map(addition => <div key={addition.formulas.join('+')}>
               <p className="font-medium">{addition.formulas.join(' + ')} 합방 검토에 참고한 기록</p>
@@ -113,16 +129,12 @@ function GuideResults({guide}: {guide?: GuideSuggestions}) {
   return <>
     <ol className="divide-y divide-primary/15">
       {guide.recommendations.map(candidate => <li key={candidate.formula}>
-        <details className="group/guide">
-          <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 py-2 [&::-webkit-details-marker]:hidden">
-            <span className="shrink-0 text-sm">{candidate.rank}순위</span>
-            <strong className="min-w-0 flex-1">{candidate.formula}</strong>
-            <ChevronDown size={18} aria-hidden="true" className="shrink-0 group-open/guide:rotate-180"/>
-          </summary>
-          <div className="space-y-2 pb-3 text-sm leading-snug">
+        <details className="group/rank">
+          <RankSummary rank={candidate.rank} formula={candidate.formula} hint={candidate.conditionSummary || candidate.indications}/>
+          <div className="space-y-2 pb-3 text-base leading-normal">
             <p><strong>추천 이유</strong> · {candidate.reason}</p>
-            {candidate.indications && <p><strong>고려할 때</strong> · {candidate.indications}</p>}
-            {candidate.combinationRationale && <p><strong>함께 쓰는 이유</strong> · {candidate.combinationRationale}</p>}
+            {candidate.conditionSummary && candidate.indications !== candidate.conditionSummary && <p><strong>적용 조건</strong> · {candidate.indications}</p>}
+            {candidate.combinationRationale && <p><strong>합방을 검토할 이유</strong> · {candidate.combinationRationale}</p>}
             <p><strong>원내 사용 기록</strong> · {candidate.useHistory}</p>
             {candidate.references.map(reference => <div key={reference.url} className="border-l-2 border-primary/30 pl-2.5">
               <a href={reference.url} target="_blank" rel="noreferrer" className="inline-flex min-h-11 items-center font-medium underline underline-offset-2">{reference.title}</a>
@@ -132,7 +144,11 @@ function GuideResults({guide}: {guide?: GuideSuggestions}) {
         </details>
       </li>)}
     </ol>
-    <p className="py-1 text-sm text-primary/80">{guide.message}</p>
+    {guide.shortlistNote && <p className="border-t border-primary/15 py-2 text-sm leading-snug">{guide.shortlistNote}</p>}
+    <details className="border-t border-primary/15 text-sm">
+      <summary className="min-h-11 cursor-pointer py-2.5 font-medium">원내 사용 이력 대조 범위</summary>
+      <p className="pb-2 leading-normal">{guide.message}</p>
+    </details>
   </>;
 }
 
@@ -184,16 +200,18 @@ export function PrescriptionSearchTab() {
     {error && <p role="alert">{error}</p>}
     {busy && <p role="status">원내 처방 경과와 쯔무라 자료를 살펴보고 있습니다.</p>}
     {result && <div aria-live="polite" className="min-w-0 [overflow-wrap:anywhere]">
-      <div ref={rankings} role="region" aria-label="처방 추천 결과" tabIndex={-1} className="grid scroll-mt-2 gap-3 pb-2 lg:grid-cols-2 lg:gap-5">
+      <div ref={rankings} role="region" aria-label="처방 추천 결과" tabIndex={-1} className="grid scroll-mt-2 items-start gap-3 pb-2 lg:grid-cols-2 lg:gap-5">
         <section aria-labelledby="clinic-ranking-title" className="min-w-0">
           <h3 id="clinic-ranking-title" className="text-base font-bold">원내 결과 추천</h3>
           {result.recommendations.length > 0 && <ol className="divide-y divide-primary/15">
             {result.recommendations.map((candidate, i) => <BaseRecommendation key={candidate.base} candidate={candidate} clinic={result.clinic} position={i}/>)}
           </ol>}
           {result.status !== 'synthesized' && <p className="py-2 text-sm">{result.text}</p>}
+          {result.status === 'synthesized' && result.recommendations.length < 3 && result.shortlistNote &&
+            <p className="border-t border-primary/15 py-2 text-sm leading-snug">{result.shortlistNote}</p>}
         </section>
         <section aria-labelledby="guide-ranking-title" className="min-w-0 border-t border-primary/20 pt-2 lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0">
-          <h3 id="guide-ranking-title" className="text-base font-bold">쯔무라 자료 추천</h3>
+          <h3 id="guide-ranking-title" className="flex flex-wrap items-baseline gap-x-1 text-base font-bold">쯔무라 추천 <span className="text-sm font-normal">· 원내 사용 미확인</span></h3>
           <GuideResults guide={result.guideSuggestions}/>
         </section>
       </div>

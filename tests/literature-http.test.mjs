@@ -10,6 +10,8 @@ test('authenticated search returns independent, source-linked rankings with the 
   const headers = ['성함', '증상', '처방', '효과', '효과(자세히)'];
   const rows = [headers,
     [patient, '소화불량', '평위산', '좋음', ''],
+    [patient, '소화불량', '육군자탕', '나쁨', ''],
+    [patient, '외부비공개증상', '평위산', '보통', '외부비공개피드백'],
     [patient, '피로', '육군자탕', '종결', ''],
     [patient, '소화불량', '안중산', '', '미전달'],
   ];
@@ -50,7 +52,7 @@ test('authenticated search returns independent, source-linked rankings with the 
     const model = openai ? body.model : 'gemini-4-argon';
     if (openai) assert.equal(body.store, false);
     const prompt = openai ? body.input : body.contents[0].parts[0].text;
-    assert.doesNotMatch(prompt, /가상환자|synthetic-sheet-token|test@example/);
+    assert.doesNotMatch(prompt, /가상환자|synthetic-sheet-token|test@example|외부비공개/);
     const properties = (openai ? body.text.format.schema : body.generationConfig.responseJsonSchema).properties;
     let output;
     if (properties.options) {
@@ -58,16 +60,17 @@ test('authenticated search returns independent, source-linked rankings with the 
       const entry = name => evidence.entries.find(item => item.name === name);
       assert.equal(entry('육군자탕').used, true);
       assert.equal(entry('안중산').used, false);
+      assert.ok(properties.options.items.required.includes('conditionPhrases'));
       calls.push([model, 'guide']);
       output = invalidGuide ? 'invalid' : JSON.stringify({options: [{
         ids: [entry('안중산').id], reason: '자료에 기재된 증상과의 일치', indications: '기재 양상을 확인',
-        combinationRationale: '',
+        conditionPhrases: ['복부 긴장이 약하면서 위통·복통'], combinationRationale: '',
       }]});
     } else {
-      assert.ok(properties.recommendations);
+      assert.ok(properties.recommendations.items.required.includes('rankBasis'));
       calls.push([model, 'clinic']);
-      output = JSON.stringify({recommendations: [{
-        baseId: 1, reason: '시트 단독 사용 결과', guidance: '', groupIds: [1], limitation: '한 건', additions: [],
+      output = JSON.stringify({shortlistNote: '긍정적으로 평가된 다른 후보가 없습니다.', recommendations: [{
+        baseId: 1, rankBasis: 'solo', reason: '시트 단독 사용 결과', guidance: '', groupIds: [1], limitation: '한 건', additions: [],
       }]});
     }
     return Response.json(openai
@@ -89,14 +92,22 @@ test('authenticated search returns independent, source-linked rankings with the 
     assert.equal(response.headers.get('cache-control'), 'no-store');
     const result = await response.json();
     assert.deepEqual(calls.sort(), [[model, 'clinic'], [model, 'guide']]);
-    assert.equal(result.recommendations[0].base, '평위산');
+    const [clinicOption] = result.recommendations;
+    assert.equal(clinicOption.base, '평위산');
+    assert.match(clinicOption.headline, /단독/);
+    assert.equal(clinicOption.study.solo.good, 1);
+    assert.equal(clinicOption.study.targetImproved, 0);
+    assert.equal(clinicOption.study.absent.bad, 1);
+    assert.equal(clinicOption.study.otherTargets.included.neutral, 1);
+    assert.ok(result.shortlistNote);
     assert.equal(result.guideSuggestions.status, 'ok');
     const [option] = result.guideSuggestions.recommendations;
     assert.equal(option.formula, '안중산');
     assert.equal(option.rank, 1);
+    assert.equal(option.conditionSummary, '복부 긴장이 약하면서 위통·복통');
     assert.match(option.references[0].url, /^https:\/\//);
     assert.ok(option.references[0].excerpt.length);
-    assert.doesNotMatch(JSON.stringify(result), /가상환자|synthetic-sheet-token/);
+    assert.doesNotMatch(JSON.stringify(result), /가상환자|synthetic-sheet-token|외부비공개/);
   }
   const noClinic = await (await search('gpt-6.2-astra', '위통')).json();
   assert.equal(noClinic.status, 'insufficient');
