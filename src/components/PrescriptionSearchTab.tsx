@@ -1,9 +1,10 @@
-import React, {useState} from 'react';
+import React, {useEffect, useRef, useState} from 'react';
 import {ChevronDown} from 'lucide-react';
 import {useAuth} from '../contexts/AuthContext';
 import {authFetch} from '../authFetch';
 import type {clinicalEvidence} from '../../prescriptionSearch';
 import type {PrescriptionRecommendation} from '../../prescriptionRecommendations';
+import type {GuideSuggestions} from '../../guideSuggestions';
 
 type Clinic = ReturnType<typeof clinicalEvidence>;
 type Result = {
@@ -12,6 +13,7 @@ type Result = {
   text: string;
   model?: string;
   clinic: Clinic;
+  guideSuggestions?: GuideSuggestions;
 };
 
 const additionLabels = {
@@ -30,7 +32,7 @@ function EvidenceList({ids, clinic}: {ids: number[]; clinic: Clinic}) {
 function BaseRecommendation({candidate, clinic, position}: {candidate: PrescriptionRecommendation; clinic: Clinic; position: number}) {
   const {base, study, additions} = candidate;
   return <li>
-    <details open={position === 0} className="group/option">
+    <details className="group/option">
       <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 py-2 [&::-webkit-details-marker]:hidden">
         <span className="shrink-0 text-sm">{position + 1}순위</span>
         <strong className="min-w-0 flex-1">{base}</strong>
@@ -102,17 +104,62 @@ function ClinicalRecords({clinic, model}: {clinic: Clinic; model?: string}) {
   </details>;
 }
 
+function GuideResults({guide}: {guide?: GuideSuggestions}) {
+  if (!guide || guide.status !== 'ok' || !guide.recommendations.length) {
+    return <p className="py-2 text-sm">{guide?.message || (guide?.status === 'no_matches'
+      ? '이 증상에 맞는 새 처방이나 조합을 자료에서 찾지 못했습니다.'
+      : '쯔무라 자료 추천을 불러오지 못했습니다.')}</p>;
+  }
+  return <>
+    <ol className="divide-y divide-primary/15">
+      {guide.recommendations.map(candidate => <li key={candidate.formula}>
+        <details className="group/guide">
+          <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 py-2 [&::-webkit-details-marker]:hidden">
+            <span className="shrink-0 text-sm">{candidate.rank}순위</span>
+            <strong className="min-w-0 flex-1">{candidate.formula}</strong>
+            <ChevronDown size={18} aria-hidden="true" className="shrink-0 group-open/guide:rotate-180"/>
+          </summary>
+          <div className="space-y-2 pb-3 text-sm leading-snug">
+            <p><strong>추천 이유</strong> · {candidate.reason}</p>
+            {candidate.indications && <p><strong>고려할 때</strong> · {candidate.indications}</p>}
+            {candidate.combinationRationale && <p><strong>함께 쓰는 이유</strong> · {candidate.combinationRationale}</p>}
+            <p><strong>원내 사용 기록</strong> · {candidate.useHistory}</p>
+            {candidate.references.map(reference => <div key={reference.url} className="border-l-2 border-primary/30 pl-2.5">
+              <a href={reference.url} target="_blank" rel="noreferrer" className="inline-flex min-h-11 items-center font-medium underline underline-offset-2">{reference.title}</a>
+              <p><strong>적응증 요약</strong> · {reference.excerpt}</p>
+            </div>)}
+          </div>
+        </details>
+      </li>)}
+    </ol>
+    <p className="py-1 text-sm text-primary/80">{guide.message}</p>
+  </>;
+}
+
 export function PrescriptionSearchTab() {
   const {googleAccessToken,reconnectGoogle}=useAuth();
   const [query,setQuery]=useState(''), [model,setModel]=useState('gpt-6.2-astra');
   const [result,setResult]=useState<Result|null>(null), [error,setError]=useState(''), [busy,setBusy]=useState(false);
   const [expired,setExpired]=useState(false);
+  const rankings = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!result || !rankings.current || !window.matchMedia('(max-width: 639px)').matches) return;
+    const rows = rankings.current.querySelectorAll('ol > li > details > summary');
+    if (!rows.length) return;
+    const lastRow = rows[rows.length - 1];
+    const viewport = window.visualViewport;
+    const top = viewport?.offsetTop ?? 0;
+    const bottom = top + (viewport?.height ?? window.innerHeight);
+    if (rankings.current.getBoundingClientRect().top >= top && lastRow.getBoundingClientRect().bottom <= bottom) return;
+    rankings.current.focus({preventScroll: true});
+    rankings.current.scrollIntoView({block: 'start', behavior: 'instant'});
+  }, [result]);
   async function search(e:React.FormEvent) {
     e.preventDefault(); setBusy(true); setResult(null); setError('');
     try {
       const accessToken=(!googleAccessToken||expired)?await reconnectGoogle():googleAccessToken;
       if(!accessToken) throw Error('시트를 읽으려면 Google 계정을 연결해주세요.');
-      const res=await authFetch('/api/prescription-search',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:query.trim(),model,accessToken,view:'component-synthesis'})});
+      const res=await authFetch('/api/prescription-search',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:query.trim(),model,accessToken,view:'component-synthesis-with-guide'})});
       setExpired(res.status===401);
       const data=await res.json();
       if(!res.ok) throw Error(data.error||'검색에 실패했습니다.');
@@ -135,13 +182,21 @@ export function PrescriptionSearchTab() {
       <button type="submit" disabled={busy} className="min-h-12 min-w-16 rounded bg-primary text-white font-bold px-3 disabled:opacity-60">{busy?'검색 중…':'검색'}</button>
     </form>
     {error && <p role="alert">{error}</p>}
-    {busy && <p role="status">처방별 경과와 여러 합방에 공통으로 쓰인 처방을 비교하고 있습니다.</p>}
+    {busy && <p role="status">원내 처방 경과와 쯔무라 자료를 살펴보고 있습니다.</p>}
     {result && <div aria-live="polite" className="min-w-0 [overflow-wrap:anywhere]">
-      <h3 className="font-bold text-lg">기본 처방과 합방 제안</h3>
-      {result.recommendations.length > 0 && <ol className="divide-y divide-primary/15">
-        {result.recommendations.map((candidate, i) => <BaseRecommendation key={candidate.base} candidate={candidate} clinic={result.clinic} position={i}/>)}
-      </ol>}
-      {result.status !== 'synthesized' && <p className="py-2 text-sm">{result.text}</p>}
+      <div ref={rankings} role="region" aria-label="처방 추천 결과" tabIndex={-1} className="grid scroll-mt-2 gap-3 pb-2 lg:grid-cols-2 lg:gap-5">
+        <section aria-labelledby="clinic-ranking-title" className="min-w-0">
+          <h3 id="clinic-ranking-title" className="text-base font-bold">원내 결과 추천</h3>
+          {result.recommendations.length > 0 && <ol className="divide-y divide-primary/15">
+            {result.recommendations.map((candidate, i) => <BaseRecommendation key={candidate.base} candidate={candidate} clinic={result.clinic} position={i}/>)}
+          </ol>}
+          {result.status !== 'synthesized' && <p className="py-2 text-sm">{result.text}</p>}
+        </section>
+        <section aria-labelledby="guide-ranking-title" className="min-w-0 border-t border-primary/20 pt-2 lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0">
+          <h3 id="guide-ranking-title" className="text-base font-bold">쯔무라 자료 추천</h3>
+          <GuideResults guide={result.guideSuggestions}/>
+        </section>
+      </div>
       <ClinicalRecords clinic={result.clinic} model={result.model}/>
     </div>}
   </section>

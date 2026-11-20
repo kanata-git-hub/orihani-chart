@@ -20,6 +20,8 @@ COPY --from=build /app/prescriptionRecipe.ts ./prescriptionRecipe.ts
 COPY --from=build /app/prescriptionSearch.ts ./prescriptionSearch.ts
 COPY --from=build /app/prescriptionRecommendations.ts ./prescriptionRecommendations.ts
 COPY --from=build /app/prescriptionSynthesisSchema.ts ./prescriptionSynthesisSchema.ts
+COPY --from=build /app/guideSuggestions.ts ./guideSuggestions.ts
+COPY --from=build /app/tsumuraMonographs.ts ./tsumuraMonographs.ts
 COPY --from=build /app/clinicPrescriptionGuidance.ts ./clinicPrescriptionGuidance.ts
 
 ENV NODE_ENV=production
