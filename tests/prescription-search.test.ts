@@ -21,6 +21,21 @@ test('미정/종결 and missing ratings never enter eligible evidence, even with
  assert.equal(single.details[0].평가,'나쁨');
 });
 
+test('undelivered prescriptions never contribute cases or feedback, even if detailed notes exist',()=>{
+  const undelivered = [
+    sample('', '피로가 완전히 호전됨', '나처방'),
+    sample(' \t　', '피로가 악화됨', '가처방'),
+    sample('', '', '미등록'),
+    sample('', '').slice(0, 4), // Sheets omits trailing empty cells.
+  ];
+  const eligible = sample('보통', '피로는 조금 좋아졌음');
+  const mixed = summarize(eligible, ...undelivered);
+  assert.deepEqual(mixed.groups, summarize(eligible).groups);
+  assert.deepEqual(mixed.excluded, {미정:0, 종결:0, 결과미기록:4, 기타:0});
+  assert.equal(mixed.skipped, 0);
+  assert.deepEqual(summarize(...undelivered).groups, []);
+});
+
 test('separates partial target response, worsening of another symptom and missing or uncertain details',()=>{
  const data=summarize(sample('보통','초반 피로는 50% 호전됐지만 두통은 더 심해짐. 이후 피로 재발.'),
    sample('나쁨','피로가 호전되지 않았고 두통은 악화되지 않음'),sample('좋음','피로는 조금 좋아졌고 부작용은 없음'),

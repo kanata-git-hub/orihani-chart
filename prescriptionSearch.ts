@@ -188,8 +188,13 @@ export function clinicalEvidence(rows: SheetRows, catalog: SheetRows, query: str
     const get=(name:string)=>String(row[idx(name)]??'').trim();
     if (!compact(get('증상')).includes(term)) continue;
     const v=get('효과');
+    // An empty 효과 cell means the prescription was never handed over.
+    if (!v) {
+      excluded.결과미기록++;
+      continue;
+    }
     if (!isGrade(v)) {
-      const bucket=v==='미정'||v==='종결'?v:v?'기타':'결과미기록';
+      const bucket=v==='미정'||v==='종결'?v:'기타';
       excluded[bucket]++;
       continue;
     }

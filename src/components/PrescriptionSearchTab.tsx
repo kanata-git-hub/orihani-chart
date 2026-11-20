@@ -56,7 +56,7 @@ export function PrescriptionSearchTab() {
         </ul></details>}
       </section>)}
       {!result.clinic.groups.length && <p>집계 가능한 기록 없음</p>}
-      <p>평가 제외 · 미정 {result.clinic.excluded.미정}건 · 종결 {result.clinic.excluded.종결}건 · 등급 미기록 {result.clinic.excluded.결과미기록}건 · 기타 {result.clinic.excluded.기타}건</p>
+      <p>평가 제외 · 처방 미전달(효과 빈칸) {result.clinic.excluded.결과미기록}건 · 미정 {result.clinic.excluded.미정}건 · 종결 {result.clinic.excluded.종결}건 · 기타 {result.clinic.excluded.기타}건</p>
       {result.clinic.skipped>0 && <p>처방 식별이 어려운 기록 {result.clinic.skipped}건 제외</p>}
     </div>}
   </section>
