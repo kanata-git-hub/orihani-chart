@@ -2,6 +2,8 @@ import { CLINIC_PRESCRIPTION_GUIDANCE } from './clinicPrescriptionGuidance.ts';
 import { generateFollowUpResponse } from './followUpEngine.ts';
 import { componentEvidence } from './prescriptionSearch.ts';
 import { prescriptionSynthesisSchema } from './prescriptionSynthesisSchema.ts';
+import { guideHistoryKey, recommendFromGuide } from './guideSuggestions.ts';
+import { tsumuraMonographs } from './tsumuraMonographs.ts';
 import type { clinicalEvidence } from './prescriptionSearch.ts';
 
 type Clinic = ReturnType<typeof clinicalEvidence>;
@@ -110,8 +112,8 @@ function readRecommendations(raw: string, clinic: Clinic, components: Component[
   });
 }
 
-export async function recommendPrescriptions(clinic: Clinic, _query: string, model: SearchModel,
-  generate = generateFollowUpResponse): Promise<Synthesis> {
+async function recommendFromClinic(clinic: Clinic, model: SearchModel,
+  generate: typeof generateFollowUpResponse): Promise<Synthesis> {
   if (!clinic.groups.some(hasSupport)) {
     const text = clinic.groups.length ? '‘좋음’으로 평가한 기록이 없고, ‘보통’ 기록의 상세란에서도 검색 증상의 호전을 확인하지 못했습니다.' : '이 증상으로 평가된 처방 기록이 없습니다.';
     return { status: 'insufficient', recommendations: [], text };
@@ -151,4 +153,17 @@ export async function recommendPrescriptions(clinic: Clinic, _query: string, mod
   } catch {
     return { status: 'model-unavailable', recommendations: [], text: '선택한 AI의 종합 판단을 확인할 수 없습니다. 다시 검색하거나 아래 시트 기록을 확인해주세요.' };
   }
+}
+
+type Generator = typeof generateFollowUpResponse;
+// Older integrations can inject a single generator for clinic-only synthesis.
+// The regular authenticated search runs two independent analyses with the same chosen model.
+export async function recommendPrescriptions(clinic: Clinic, _query: string, model: SearchModel,
+  generators: Generator | {clinic: Generator, guide: Generator} = {clinic: generateFollowUpResponse, guide: generateFollowUpResponse}) {
+  if (typeof generators === 'function') return recommendFromClinic(clinic, model, generators);
+  const [synthesis, guideSuggestions] = await Promise.all([
+    recommendFromClinic(clinic, model, generators.clinic),
+    recommendFromGuide(clinic[guideHistoryKey], clinic.targets, tsumuraMonographs, model, generators.guide),
+  ]);
+  return {...synthesis, guideSuggestions};
 }

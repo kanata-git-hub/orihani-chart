@@ -1,5 +1,7 @@
 import { combinedParts, parsePrescriptionAdditions, RecipeError } from './prescriptionRecipe.ts';
 import type { SheetRows } from './prescriptionRecipe.ts';
+import { guideHistoryKey, guideUseHistory } from './guideSuggestions.ts';
+import { tsumuraMonographs } from './tsumuraMonographs.ts';
 
 const compact = (value: unknown) => String(value ?? '').normalize('NFKC').replace(/\s+/g, '').toLowerCase();
 
@@ -281,7 +283,10 @@ export function clinicalEvidence(rows: SheetRows, catalog: SheetRows, query: str
     else group.contexts.set(contextKey,context);
     groups.set(groupKey,group);
   }
-  return {targets,groups:[...groups.values()].map(g=>({...g,formula:g.components.join(' + '),contexts:[...g.contexts.values()],details:[...g.details.values()],notes:[...g.notes.values()]})),skipped,excluded};
+  return {
+    targets, groups:[...groups.values()].map(g=>({...g,formula:g.components.join(' + '),contexts:[...g.contexts.values()],details:[...g.details.values()],notes:[...g.notes.values()]})), skipped, excluded,
+    [guideHistoryKey]: guideUseHistory(rows, catalog, tsumuraMonographs),
+  };
 }
 
 type Counts = { total:number, good:number, neutral:number, bad:number };
