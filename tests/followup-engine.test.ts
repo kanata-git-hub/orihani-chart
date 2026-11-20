@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateFollowUpResponse, ASTRA_MODEL } from '../followUpEngine.ts';
+import { prescriptionSynthesisSchema } from '../prescriptionSynthesisSchema.ts';
 
 const prompt = '### 합성 테스트\n기존 입력과 분석 지시문을 그대로 전달합니다.';
 const env = { OPENAI_API_KEY: 'synthetic-openai-key', GEMINI_API_KEY: 'synthetic-gemini-key' };
@@ -35,6 +36,28 @@ test('legacy requests default to Gemini and retain its model and prompt', async 
   }});
   assert.deepEqual(calls, ['gemini-3.1-pro-preview']);
   assert.equal(result.engine, 'gemini');
+});
+
+test('synthesis requests use the selected models and send their structured response contract', async () => {
+  const opts = {env, responseSchema: prescriptionSynthesisSchema};
+  await generateFollowUpResponse(prompt, 'gpt-astra', { ...opts, exactSearchModel:'gpt-6.2-astra', request: async (_, init) => {
+    const body = JSON.parse(String(init?.body));
+    assert.equal(body.model, 'gpt-6.2-astra');
+    assert.equal(body.store, false);
+    assert.deepEqual(body.text.format, {type:'json_schema', name:'prescription_synthesis', strict:true, schema:prescriptionSynthesisSchema});
+    return reply(completed());
+  }});
+  const originalFetch = globalThis.fetch;
+  let sent: any;
+  try {
+    globalThis.fetch = async (url, init) => {
+      sent = JSON.parse(init?.body ? String(init.body) : await (url as Request).text());
+      return reply({candidates:[{content:{role:'model',parts:[{text:'{"recommendations":[]}'}]},finishReason:'STOP'}]});
+    };
+    await generateFollowUpResponse(prompt, 'gemini', {...opts, exactSearchModel:'gemini-4-argon'});
+  } finally { globalThis.fetch = originalFetch; }
+  assert.equal(sent.generationConfig.responseMimeType, 'application/json');
+  assert.deepEqual(sent.generationConfig.responseJsonSchema, prescriptionSynthesisSchema);
 });
 
 test('Gemini retains rate-limit retry and fallback within Gemini', async () => {
