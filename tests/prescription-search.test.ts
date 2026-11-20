@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {clinicalEvidence, comparePrescriptionEvidence, rankPrescriptions} from '../prescriptionSearch.ts';
+import {clinicalEvidence, componentEvidence} from '../prescriptionSearch.ts';
 import {generateFollowUpResponse} from '../followUpEngine.ts';
 import {recommendPrescriptions} from '../prescriptionRecommendations.ts';
 
@@ -9,44 +9,204 @@ const headers=['성함','증상','처방','처방2','효과','효과(자세히)'
 const sample=(v:string,w:string,formula='가처방',second='')=>['합성이름','피로, 두통',formula,second,v,w];
 const summarize=(...rows:string[][])=>clinicalEvidence([headers,...rows],catalog,'피로');
 
-test('model may choose among tied formulas outside the first three and cannot override sheet grades', async () => {
-  const names = ['가처방','나처방','다처방','라처방','마처방','바처방'];
-  const rows = names.map(name => sample(name==='바처방' ? '' : '좋음', '', name));
-  const clinic = clinicalEvidence([headers, ...rows, sample('좋음','','가처방')], [['처방명'], ...names.map(name => [name])], '피로');
-  const deterministic = rankPrescriptions(clinic);
-  const answer = (ids:number[]) => JSON.stringify(ids.map(id => ({id, detail:'지어낸 상세', guidance:'원내 지침 해석'})));
+function commonBaseFixture() {
+  const formulas = ['기본탕','보조탕','대안탕','빈용탕','비교탕','반례탕','미전달탕'];
+  const directory = [['처방명'], ...formulas.map(name=>[name])];
+  const record = (targets:string, first:string, second:string, grade:string, feedback='') =>
+    ['합성이름',targets,first,second,grade,feedback];
+  const rows = [
+    headers,
+    ...Array.from({length:5}, () => record('소화불량, 두통','빈용탕','비교탕','좋음','두통이 좋아짐')),
+    record('소화불량, 두통','기본탕','보조탕','좋음','소화불량이 조금 좋아짐'),
+    record('소화불량','기본탕','대안탕','좋음'),
+    record('소화불량, 두통','기본탕','대안탕','나쁨','소화불량 악화됨. 합성이름 010-1234-5678'),
+    record('소화불량, 기침','반례탕','','보통','기침은 그대로'),
+    record('소화불량','미전달탕','','','소화불량 호전됨'),
+  ];
+  return clinicalEvidence(rows,directory,'소화불량');
+}
+
+function synthesisExample() {
+  const clinic = commonBaseFixture();
+  const components = componentEvidence(clinic);
+  const componentId = (name:string) => {
+    const id = 1 + components.findIndex(item=>item.formula===name);
+    assert(id > 0);
+    return id;
+  };
+  const groupId = (...names:string[]) => {
+    const id = 1 + clinic.groups.findIndex(group=>
+      group.components.length===names.length && names.every(name=>group.components.includes(name)));
+    assert(id > 0);
+    return id;
+  };
+  const baseWithPartner = groupId('기본탕','보조탕');
+  const baseWithAlternative = groupId('기본탕','대안탕');
+  const choice = {
+    baseId:componentId('기본탕'),
+    reason:'서로 다른 두 합방에 반복됐고 소화불량 호전 기록이 있습니다.',
+    limitation:'단독 사용 사례가 없고 다른 조합에서는 악화도 기록됐습니다.',
+    guidance:'',
+    groupIds:[baseWithPartner,baseWithAlternative],
+    additions:[{
+      componentIds:[componentId('보조탕')],
+      when:'두통을 함께 호소하는 경우',
+      why:'두 증상이 함께 있던 합방에서 소화불량 호전이 기록돼 함께 쓸 후보입니다.',
+      groupIds:[baseWithPartner],
+    }],
+  };
+  return {clinic,choice,componentId,groupId};
+}
+
+test('both selected models can infer a recurring base over a more frequent exact regimen with auditable, conditional add-ons', async () => {
+  const {clinic,choice} = synthesisExample();
   for (const model of ['gpt-6.2-astra','gemini-4-argon'] as const) {
-    const result = await recommendPrescriptions(clinic,'피로',model,async (prompt,engine,options) => {
+    const result = await recommendPrescriptions(clinic,'소화불량',model,async(prompt,engine,options)=>{
       assert.equal(options.exactSearchModel,model);
-      assert.equal(engine,model==='gpt-6.2-astra'?'gpt-astra':'gemini');
-      assert.match(String(prompt),/쯔무라/);
-      assert.doesNotMatch(String(prompt),/합성이름|바처방/);
-      return {text:answer([1,5,2]), model, engine:String(engine)};
+      assert.equal(engine,model==='gpt-6.2-astra' ? 'gpt-astra' : 'gemini');
+      const input=String(prompt);
+      assert.match(input,/쯔무라/);
+      assert.doesNotMatch(input,/합성이름|010-1234-5678|미전달탕/);
+      const dataLine=input.split('\n').find(line=>{
+        try { const parsed=JSON.parse(line); return Array.isArray(parsed.groups) && Array.isArray(parsed.components); }
+        catch { return false; }
+      });
+      assert(dataLine,'Model receives structured sheet evidence');
+      const payload=JSON.parse(dataLine);
+      assert.deepEqual(payload.targets,['소화불량']);
+      assert.equal(payload.groups.length,clinic.groups.length);
+      assert.equal(payload.components.length,componentEvidence(clinic).length);
+      const records=JSON.stringify(payload.groups);
+      for (const term of ['빈용탕','기본탕','대안탕','반례탕','나쁨','보통','두통','기침','악화']) {
+        assert(records.includes(term),'Missing model evidence: '+term);
+      }
+      return {text:JSON.stringify({recommendations:[choice]}),model,engine:String(engine)};
     });
-    assert.deepEqual(result.rankings.map(r => r.formula), [deterministic[0],deterministic[4],deterministic[1]].map(r => r.formula));
-    assert.equal(result.insights[0].detail,'');
-    assert.equal(result.insights[0].guidance,'원내 지침 해석');
-  }
-  for (const invalid of [answer([2,1,3]), answer([1,2,2]), answer([1,2,99]), '# 긴 보고서']) {
-    const result = await recommendPrescriptions(clinic,'피로','gpt-6.2-astra',async () => ({text:invalid,model:'gpt-6.2-astra',engine:'gpt-astra'}));
-    assert.deepEqual(result.rankings,deterministic.slice(0,3));
-    assert.equal(result.insights.length,0);
+    assert.equal(result.status,'synthesized');
+    assert.equal(result.model,model);
+    assert.equal(result.recommendations.length,1);
+    const [base]=result.recommendations;
+    assert.equal(base.base,'기본탕');
+    assert.equal(base.study.solo.total,0);
+    assert.equal(base.study.regimenCount,2);
+    assert.deepEqual(base.study.combined,{total:3,good:2,neutral:0,bad:1});
+    assert.deepEqual(base.groupIds,choice.groupIds);
+    assert.equal(base.limitation,choice.limitation);
+    const [addition]=base.additions;
+    assert.equal(addition.kind,'observed');
+    assert.deepEqual(addition.formulas,['보조탕']);
+    assert.equal(addition.when,choice.additions[0].when);
+    assert.equal(addition.why,choice.additions[0].why);
+    assert(!('rankings' in result) && !('estimatedPercent' in base));
   }
 });
 
-test('zero or ungraded evidence has no recommendations or provider call, and an offline model still returns a positive grade', async () => {
-  let calls = 0;
-  const offline = async () => { calls++; throw Error('offline'); };
-  for (const clinic of [summarize(),summarize(sample('나쁨','피로 호전됨'),sample('미정',''),sample('',''))]) {
-    const result = await recommendPrescriptions(clinic,'피로','gemini-4-argon',offline);
-    assert.equal(result.rankings.length,0);
+test('combining two separately supported formulas is labeled a hypothesis; mixing is optional',async()=>{
+  const {clinic,choice,componentId,groupId}=synthesisExample();
+  const hypothetical={
+    componentIds:[componentId('빈용탕')],
+    when:'다른 증상이 함께 있는 경우',
+    why:'각기 다른 조합의 사례를 바탕으로 검토할 수 있습니다.',
+    groupIds:[groupId('기본탕','보조탕'),groupId('빈용탕','비교탕')],
+  };
+  for (const additions of [[hypothetical],[]]) {
+    const result=await recommendPrescriptions(clinic,'소화불량','gemini-4-argon',async()=>({
+      text:JSON.stringify({recommendations:[{...choice,additions}]}),model:'gemini-4-argon',engine:'gemini',
+    }));
+    assert.equal(result.status,'synthesized');
+    const partners=result.recommendations[0].additions;
+    assert.equal(partners.length,additions.length);
+    if (additions.length) assert.equal(partners[0].kind,'hypothesis');
+  }
+});
+
+test('two members seen only in a three-formula regimen do not become an observed two-formula treatment',async()=>{
+  const names=['가처방','나처방','다처방'];
+  const clinic=clinicalEvidence([headers,sample('좋음','피로가 호전됨',names.join(' + '))],
+    [['처방명'],...names.map(name=>[name])],'피로');
+  const ids=componentEvidence(clinic).map(item=>item.formula);
+  const proposed={
+    baseId:ids.indexOf('가처방')+1,
+    reason:'좋음으로 평가된 합방에 포함됐습니다.',
+    limitation:'세 처방을 함께 사용해 두 처방만의 효과는 확인되지 않았습니다.',
+    guidance:'',
+    groupIds:[1],
+    additions:[{componentIds:[ids.indexOf('나처방')+1],when:'동반 증상 경과를 확인할 때',
+      why:'세 처방과 함께 사용된 사례가 있어 검토합니다.',groupIds:[1]}],
+  };
+  const result=await recommendPrescriptions(clinic,'피로','gpt-6.2-astra',async()=>({
+    text:JSON.stringify({recommendations:[proposed]}),model:'gpt-6.2-astra',engine:'gpt-astra',
+  }));
+  assert.equal(result.status,'synthesized');
+  assert.equal(result.recommendations[0].study.solo.total,0);
+  assert.equal(result.recommendations[0].additions[0].kind,'within-larger');
+});
+
+test('bad references, duplicate bases, unreadable answers and outages never become clinical recommendations',async()=>{
+  const {clinic,choice,groupId,componentId}=synthesisExample();
+  const badChoices=[
+    '# 비교 보고서',
+    JSON.stringify({recommendations:[{...choice,baseId:99999}]}),
+    JSON.stringify({recommendations:[{...choice,groupIds:[groupId('반례탕')]}]}),
+    JSON.stringify({recommendations:[choice,choice]}),
+    JSON.stringify({recommendations:[{...choice,additions:[{...choice.additions[0],componentIds:[componentId('기본탕')]}]}]}),
+  ];
+  for (const response of [...badChoices,undefined]) {
+    const result=await recommendPrescriptions(clinic,'소화불량','gpt-6.2-astra',async()=>{
+      if (response===undefined) throw Error('offline');
+      return {text:response,model:'gpt-6.2-astra',engine:'gpt-astra'};
+    });
+    assert.equal(result.status,'model-unavailable');
+    assert.deepEqual(result.recommendations,[]);
+    assert(!('rankings' in result));
+  }
+});
+
+test('no positive eligible record leaves evidence available without inventing an inference',async()=>{
+  let calls=0;
+  for (const clinic of [summarize(),summarize(sample('나쁨','피로 호전됨'),sample('보통',''),sample('미정',''),sample('',''))]) {
+    const result=await recommendPrescriptions(clinic,'피로','gemini-4-argon',async()=>{calls++;throw Error('unexpected');});
+    assert.equal(result.status,'insufficient');
+    assert.deepEqual(result.recommendations,[]);
   }
   assert.equal(calls,0);
-  const result = await recommendPrescriptions(summarize(sample('좋음','')),'피로','gemini-4-argon',offline);
+});
+
+test('explicit target improvement in neutral feedback can support a base while the neutral grade and adverse contrast remain intact',async()=>{
+  const own=['가상인','소화불량, 두통','가처방','','보통','소화불량은 조금 좋아짐'];
+  const adverse=['가상인','소화불량','가처방','','나쁨','소화불량 악화됨'];
+  const other=['가상인','소화불량, 두통','나처방','','보통','두통은 조금 좋아짐'];
+  const clinic=clinicalEvidence([headers,own,adverse,other],catalog,'소화불량');
+  const groupId=clinic.groups.findIndex(group=>group.formula==='가처방')+1;
+  const baseId=componentEvidence(clinic).findIndex(item=>item.formula==='가처방')+1;
+  const choice={baseId,reason:'보통 평가에서 소화불량이 일부 호전된 기록이 있습니다.',
+    limitation:'동일 처방에서 악화된 기록도 있습니다.',guidance:'',groupIds:[groupId],additions:[]};
+  let calls=0;
+  const reply=async()=>{
+    calls++;
+    return {text:JSON.stringify({recommendations:[choice]}),model:'gpt-6.2-astra',engine:'gpt-astra'};
+  };
+  const result=await recommendPrescriptions(clinic,'소화불량','gpt-6.2-astra',reply);
+  assert.equal(result.status,'synthesized');
   assert.equal(calls,1);
-  assert.equal(result.rankings.length,1);
-  assert.equal(result.rankings[0].good,1);
-  assert.equal(result.rankings[0].estimatedPercent,66.7);
+  const [recommended]=result.recommendations;
+  assert.equal(recommended.base,'가처방');
+  assert.deepEqual(recommended.study.solo,{total:2,good:0,neutral:1,bad:1});
+  for (const row of [other,['가상인','소화불량','가처방','','나쁨','소화불량은 조금 좋아짐']]) {
+    const unsupported=clinicalEvidence([headers,row],catalog,'소화불량');
+    const noChoice=await recommendPrescriptions(unsupported,'소화불량','gpt-6.2-astra',reply);
+    assert.equal(noChoice.status,'insufficient');
+    assert.deepEqual(noChoice.recommendations,[]);
+  }
+  assert.equal(calls,1);
+  const unrelatedBaseId=componentEvidence(clinic).findIndex(item=>item.formula==='나처방')+1;
+  const unrelatedGroupId=clinic.groups.findIndex(group=>group.formula==='나처방')+1;
+  const badCitation=await recommendPrescriptions(clinic,'소화불량','gemini-4-argon',async()=>({
+    text:JSON.stringify({recommendations:[{...choice,baseId:unrelatedBaseId,groupIds:[unrelatedGroupId]}]}),
+    model:'gemini-4-argon',engine:'gemini',
+  }));
+  assert.equal(badCitation.status,'model-unavailable');
+  assert.deepEqual(badCitation.recommendations,[]);
 });
 
 test('미정/종결 and missing ratings never enter eligible evidence, even with strongly positive W',()=>{
@@ -77,39 +237,6 @@ test('undelivered prescriptions never contribute cases or feedback, even if deta
   assert.deepEqual(summarize(...undelivered).groups, []);
 });
 
-test('counts 좋음 without any mention of the target in W and ranks complete prescriptions',()=>{
-  const formulas = [['처방명'],['합성가'],['합성나'],['합성다'],['합성라'],['합성마']];
-  const row = (formula:string, grade:string, detail='') => ['가상인','소화불량, 두통',formula,'',grade,detail];
-  const rows = [headers,
-    row('합성가', '좋음'), row('합성가', '좋음', '두통은 조금 좋아짐'),
-    row('합성나 + 합성다', '좋음', '소화불량 나아짐'), row('합성다 + 합성나', '좋음', '소화불량 50% 호전됨. 소화불량 많이 호전됨'),
-    row('합성라', '좋음'), row('합성마','보통','소화불량 호전됨'),
-    row('합성마','미정','소화불량 호전됨'), row('합성마','','소화불량 호전됨')];
-  const ranked = rankPrescriptions(clinicalEvidence(rows,formulas,'소화불량'));
-  assert.deepEqual(ranked, [
-    {formula:'합성나 + 합성다',good:2,total:2,observedPercent:100,estimatedPercent:75,targetImproved:2,targetCaution:0},
-    {formula:'합성가',good:2,total:2,observedPercent:100,estimatedPercent:75,targetImproved:0,targetCaution:0},
-    {formula:'합성라',good:1,total:1,observedPercent:100,estimatedPercent:66.7,targetImproved:0,targetCaution:0},
-  ]);
-  assert.deepEqual(rankPrescriptions(summarize(sample('나쁨',''),sample('보통',''))),[]);
-});
-
-test('uses unrounded likelihood for ordering; explicit cautions distinguish otherwise equal evidence',()=>{
-  const entries=rankPrescriptions(summarize(
-    sample('좋음','피로가 호전됨. 이후 피로가 악화됨. 피로 재발.'),
-    sample('좋음','','나처방'),
-  ));
-  assert.equal(entries[0].formula,'나처방');
-  assert.deepEqual([entries[1].targetImproved,entries[1].targetCaution],[1,1]);
-  assert.equal(comparePrescriptionEvidence(entries[0],{...entries[0],formula:'다처방'}),0);
-  const a={...entries[0],good:1000,total:2000,estimatedPercent:50};
-  const b={...entries[0],good:1001,total:2001,estimatedPercent:50};
-  assert(comparePrescriptionEvidence(a,b)>0);
-  const mixed=rankPrescriptions(summarize(sample('좋음',''),sample('보통',''),sample('나쁨','')));
-  assert.equal(mixed[0].observedPercent,33.3);
-  assert.equal(mixed[0].estimatedPercent,40);
-});
-
 test('resolves catalog formulas from legacy combined records and treatment additions without inventing a solo effect',()=>{
   const combinedHeaders=['성함','증상','처방 조합','가','감','효과','효과(자세히)'];
   const data=clinicalEvidence([combinedHeaders,
@@ -119,12 +246,11 @@ test('resolves catalog formulas from legacy combined records and treatment addit
     ['가상인','피로','미등록 + 나처방','','','좋음',''],
   ],catalog,'피로');
   assert.equal(data.skipped,1);
-  const [ranked]=rankPrescriptions(data);
-  assert.equal(ranked.formula,'가처방 + 나처방');
-  assert.equal(ranked.good,2);
-  assert.equal(ranked.total,2);
-  assert.equal(data.groups.find(g=>g.formula==='가처방')!.좋음,0);
-  assert.equal(data.groups.find(g=>g.formula===ranked.formula)!.가감기록,2);
+  const combo = data.groups.find(group => group.formula === '가처방 + 나처방')!;
+  assert.equal(combo.좋음,2);
+  assert.equal(combo.기록,2);
+  assert.equal(data.groups.find(group => group.formula === '가처방')!.좋음,0);
+  assert.equal(combo.가감기록,2);
   assert.doesNotMatch(JSON.stringify(data),/감초/);
 });
 

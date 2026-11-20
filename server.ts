@@ -456,6 +456,13 @@ app.post('/api/prescription-search', async (req,res) => {
     const [patients, catalog] = await Promise.all([readPrescriptionSheet(token,"'한약환자'!A1:W"),readPrescriptionSheet(token,"'약재'!A1:D")]);
     const clinic = clinicalEvidence(patients,catalog,query);
     const recommendation = await recommendPrescriptions(clinic, query, model);
+    // Already-open tabs render a plain text result and expect an array of legacy rankings.
+    if (!req.body.view) {
+      const lines = recommendation.recommendations.map(item =>
+        [item.base + ' · ' + item.reason, ...item.additions.map(add => '+ ' + add.formulas.join(' + ') + ' · ' + add.when + ' · ' + add.why)].join('\n'));
+      const text = [...lines, lines.length ? '근거를 펼쳐보려면 화면을 새로고침해주세요.' : recommendation.text].join('\n');
+      return res.json({ clinic, rankings: [], insights: [], text });
+    }
     return res.json({ clinic, ...recommendation });
   } catch(error) { return recipeErrorResponse(error,res); }
 });

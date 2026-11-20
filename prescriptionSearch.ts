@@ -20,16 +20,26 @@ const symptoms: Record<string, string[]> = {
   부종:['부종','부기','붓기'], 빈뇨:['빈뇨','소변횟수'], 야간뇨:['야간뇨'],
   요통:['요통','허리통증'], 슬통:['슬통','무릎통증'], 복만:['복만','복부팽만'],
   구내염:['구내염'], 비염:['비염'], 부작용:['부작용','이상반응'],
+  역류:['역류','신물'], 트림:['트림'], 조기포만감:['조기포만','금방배부름'],
+  후비루:['후비루'], 입마름:['입마름','구강건조','구건'], 갈증:['갈증'],
+  두근거림:['두근거림','두근거려','심계항진'], 흉부답답함:['가슴답답','흉부답답','흉민'],
+  불안:['불안'], 우울:['우울'], 안면홍조:['안면홍조','얼굴홍조'], 식은땀:['식은땀','도한'],
+  수족냉증:['수족냉증','손발냉증'], 월경통:['월경통','생리통'], 월경불순:['월경불순','생리불순'],
+  무월경:['무월경'], 월경전증후군:['월경전증후군','생리전증후군','pms'],
+  다낭성난소증후군:['다낭성난소','pcos'], 비만:['비만','체중감량','다이어트'],
 };
 
-function targetOf(clause: string, term: string): string {
+function symptomMentions(clause: string): Set<string> {
   const covered: {name:string, word:string}[] = [];
   for (const [name, aliases] of Object.entries(symptoms)) {
     for (const word of aliases) if (clause.includes(word)) covered.push({name,word});
   }
   // 허리통증 is one symptom, not 허리통증 plus a separate 통증 observation.
   const distinct = covered.filter(a => !covered.some(b => a.name !== b.name && b.word.includes(a.word) && b.word.length > a.word.length));
-  const labels = new Set(distinct.map(({name}) => name));
+  return new Set(distinct.map(({name}) => name));
+}
+
+function targetOf(clause: string, term: string, labels: Set<string>): string {
   const targetAlias = Object.entries(symptoms).find(([name,aliases]) => name===term || aliases.includes(term))?.[0];
   const explicit = clause.includes(term) || (targetAlias !== undefined && labels.has(targetAlias));
   if (labels.size > 1 || (explicit && labels.size && !labels.has(targetAlias ?? term) && ![...labels].every(l => term.includes(l)))) {
@@ -145,7 +155,7 @@ function safeClinicalClauses(clauses:string[],names:Set<string>) {
   return usable?result:[];
 }
 
-function summarizeFeedback(clauses:string[], term:string, grade:Grade) {
+function summarizeFeedback(clauses:string[], terms:string[], grade:Grade) {
   const unique = new Map<string, Finding>();
   // Conjunctions start a fresh attribution scope. An unlabelled outcome is
   // retained with its target unknown rather than inherited from the chart C/C.
@@ -154,7 +164,14 @@ function summarizeFeedback(clauses:string[], term:string, grade:Grade) {
     if (!s) continue;
     const numeric=measurement(s);
     const course=qualitativeCourse(s);
-    const target=targetOf(s,term);
+    const labels=symptomMentions(s);
+    const assignments=terms.map(term=>targetOf(s,term,labels));
+    const explicit=terms.filter((_,index)=>assignments[index]==='검색 증상');
+    let target=assignments[0];
+    if (terms.length>1) {
+      if (explicit.length>1 || assignments.includes('여러 증상 언급·귀속 불명')) target='여러 증상 언급·귀속 불명';
+      else if (explicit.length===1) target='검색 증상: '+explicit[0];
+    }
     const add=(경과:string,정도:string)=>{
       const finding={평가:grade,대상:target,경과,정도,시점:timeOf(s)};
       unique.set(JSON.stringify(finding),finding);
@@ -166,7 +183,11 @@ function summarizeFeedback(clauses:string[], term:string, grade:Grade) {
 }
 
 type ClinicalNote={평가:Grade,내용:string[],건수:number};
-type Group = {기록:number, 좋음:number, 보통:number, 나쁨:number, 상세기록:number, 상세미기록:number, 상세해석불가:number, 가감기록:number, targetImproved:number, targetCaution:number, details: Map<string, Finding & {건수:number}>, notes:Map<string,ClinicalNote>};
+type SymptomContext = {
+  targets:string[], coSymptoms:string[], grade:Grade, modified:boolean,
+  detailStatus:'미작성'|'내용 확인'|'해석 불가', feedback:Finding[], notes:string[], count:number,
+};
+type Group = {components:string[], contexts:Map<string,SymptomContext>, 기록:number, 좋음:number, 보통:number, 나쁨:number, 상세기록:number, 상세미기록:number, 상세해석불가:number, 가감기록:number, targetImproved:number, targetCaution:number, details: Map<string, Finding & {건수:number}>, notes:Map<string,ClinicalNote>};
 const cautionCourses = new Set(['호전 없음','불변·잔존','악화','재발']);
 export function clinicalEvidence(rows: SheetRows, catalog: SheetRows, query: string) {
   const headers = (rows[0] ?? []).map(compact);
@@ -175,11 +196,15 @@ export function clinicalEvidence(rows: SheetRows, catalog: SheetRows, query: str
     if (idx(name) < 0) throw new RecipeError('환자 시트의 열 이름을 확인해주세요.');
   }
   if (idx('처방') < 0 && idx('처방 조합') < 0) throw new RecipeError('환자 시트의 처방 열을 확인해주세요.');
-  const term=compact(query);
+  const targets=[...new Set(query.normalize('NFKC').split(/[,、+\/]/).map(compact))];
   const names=new Set(rows.slice(1).map(row=>compact(row[idx('성함')])).filter(n=>n.length>=2));
-  if (!/^[가-힣a-z0-9-]{2,30}$/.test(term) || !/[가-힣a-z]/.test(term) || /[0-9]{3}/.test(term) || [...names].some(n=>term.includes(n))) {
+  if (query.length>60 || targets.some(term=>!/^[가-힣a-z0-9-]{2,30}$/.test(term) || !/[가-힣a-z]/.test(term) || /[0-9]{3}/.test(term) || [...names].some(n=>term.includes(n)))) {
     throw new RecipeError('환자 정보 없이 증상이나 질병 이름만 입력해주세요.',400);
   }
+  // Mask explicit negatives in the presenting complaints only. Qualifying or
+  // contradictory statements in the W outcome are kept for clinical interpretation.
+  const words=[...new Set([...targets,...Object.keys(symptoms),...Object.values(symptoms).flat()])].sort((a,b)=>b.length-a.length);
+  const negativeMention=new RegExp('(?:'+words.join('|')+')(?:은|는|이|가|도)?(?:전혀|현재)?(?:[:=]?\\((?:-|음성|없음|정상|양호)\\)|[:=]?(?:없음|없다|없어요|없습니다|없고|없으나|없는편|부인|정상|양호))','g');
   const col=(catalog[0]??[]).map(compact).indexOf('처방명');
   if (col<0) throw new RecipeError('약재 시트의 처방명 열을 확인해주세요.');
   const dictionary=new Map(catalog.slice(1).map(row=>[compact(row[col]),String(row[col]??'').trim()]));
@@ -188,7 +213,9 @@ export function clinicalEvidence(rows: SheetRows, catalog: SheetRows, query: str
   let skipped=0;
   for (const row of rows.slice(1)) {
     const get=(name:string)=>String(row[idx(name)]??'').trim();
-    if (!compact(get('증상')).includes(term)) continue;
+    const symptomCell=compact(get('증상')).replace(negativeMention,',');
+    const matched=targets.filter(term=>symptomCell.includes(term));
+    if (!matched.length) continue;
     const v=get('효과');
     // An empty 효과 cell means the prescription was never handed over.
     if (!v) {
@@ -210,22 +237,32 @@ export function clinicalEvidence(rows: SheetRows, catalog: SheetRows, query: str
     const parts=base.flatMap(value => dictionary.has(compact(value)) ? [value] : value.normalize('NFKC').split(/[+,、]/));
     const keys=[...new Set([...parts,...addedFormulas].map(compact))];
     if (!keys.length || keys.some(name => !name || !dictionary.has(name))) { skipped++; continue; }
-    const formula=keys.map(name=>dictionary.get(name)!).sort().join(' + ');
-    const group:Group=groups.get(formula)??{기록:0,좋음:0,보통:0,나쁨:0,상세기록:0,상세미기록:0,상세해석불가:0,가감기록:0,targetImproved:0,targetCaution:0,details:new Map(),notes:new Map()};
+    const components=keys.map(name=>dictionary.get(name)!).sort();
+    const groupKey=JSON.stringify(components);
+    const group:Group=groups.get(groupKey)??{components,contexts:new Map(),기록:0,좋음:0,보통:0,나쁨:0,상세기록:0,상세미기록:0,상세해석불가:0,가감기록:0,targetImproved:0,targetCaution:0,details:new Map(),notes:new Map()};
     group.기록++;
     group[v]++;
-    if ([additions,removals].some(x=>x && !/^(?:없음|없다|해당없음|[-–—])$/.test(compact(x)))) group.가감기록++;
+    const modified=[additions,removals].some(x=>x && !/^(?:없음|없다|해당없음|[-–—])$/.test(compact(x)));
+    if (modified) group.가감기록++;
     const detail=get('효과(자세히)');
+    const requestedLabels=new Set(matched.flatMap(term=>[term,...symptomMentions(term)]));
+    const context:SymptomContext={
+      targets:matched,coSymptoms:[...symptomMentions(symptomCell)].filter(label=>!requestedLabels.has(label)).sort(),
+      grade:v,modified,detailStatus:'미작성',feedback:[],notes:[],count:1,
+    };
     if (!detail || /^[-–—]$/.test(detail)) group.상세미기록++;
     else {
       group.상세기록++;
       const clauses=feedbackClauses(detail);
-      const findings=summarizeFeedback(clauses,term,v);
-      const targetFindings=findings.map(([,finding])=>finding).filter(f=>f.대상==='검색 증상');
+      const findings=summarizeFeedback(clauses,targets,v);
+      context.feedback=findings.map(([,finding])=>finding);
+      const targetFindings=context.feedback.filter(f=>f.대상==='검색 증상' || f.대상.startsWith('검색 증상: '));
       // Count each row once per signal, even when the feedback repeats a finding.
       if (targetFindings.some(f=>f.경과==='호전' || (f.경과==='수치 감소' && f.정도.startsWith('강도 ')))) group.targetImproved++;
       if (targetFindings.some(f=>cautionCourses.has(f.경과) || (f.경과==='수치 증가' && f.정도.startsWith('강도 ')))) group.targetCaution++;
       const note=safeClinicalClauses(clauses,names);
+      context.notes=note;
+      context.detailStatus=findings.length || note.length ? '내용 확인' : '해석 불가';
       if(note.length) {
         const key=JSON.stringify([v,note]), existing=group.notes.get(key);
         if(existing) existing.건수++;
@@ -238,38 +275,63 @@ export function clinicalEvidence(rows: SheetRows, catalog: SheetRows, query: str
         else group.details.set(key,{...finding,건수:1});
       }
     }
-    groups.set(formula,group);
+    const contextKey=JSON.stringify(context);
+    const same=group.contexts.get(contextKey);
+    if (same) same.count++;
+    else group.contexts.set(contextKey,context);
+    groups.set(groupKey,group);
   }
-  return {groups:Array.from(groups,([formula,g])=>({...g,formula,details:[...g.details.values()],notes:[...g.notes.values()]})),skipped,excluded};
+  return {targets,groups:[...groups.values()].map(g=>({...g,formula:g.components.join(' + '),contexts:[...g.contexts.values()],details:[...g.details.values()],notes:[...g.notes.values()]})),skipped,excluded};
 }
 
-export type RankedPrescription = {
-  formula: string;
-  good: number;
-  total: number;
-  observedPercent: number;
-  estimatedPercent: number;
-  targetImproved: number;
-  targetCaution: number;
-};
-
-export function comparePrescriptionEvidence(a: RankedPrescription, b: RankedPrescription): number {
-  // Compare the exact fractions before any display rounding.
-  return (b.good + 1) * (a.total + 2) - (a.good + 1) * (b.total + 2)
-    || a.targetCaution * b.total - b.targetCaution * a.total
-    || b.targetImproved * a.total - a.targetImproved * b.total
-    || b.total - a.total;
+type Counts = { total:number, good:number, neutral:number, bad:number };
+const emptyCounts = ():Counts => ({total:0, good:0, neutral:0, bad:0});
+function addCounts(sum:Counts, part:Counts) {
+  sum.total+=part.total; sum.good+=part.good; sum.neutral+=part.neutral; sum.bad+=part.bad;
+}
+function difference(all:Counts, part:Counts): Counts {
+  return {total:all.total-part.total, good:all.good-part.good, neutral:all.neutral-part.neutral, bad:all.bad-part.bad};
 }
 
-export function rankPrescriptions(clinic: ReturnType<typeof clinicalEvidence>): RankedPrescription[] {
-  const percent = (numerator: number, denominator: number) => Math.round(1000 * numerator / denominator) / 10;
-  return clinic.groups.filter(group => group.좋음 > 0).map(group => ({
-    formula: group.formula,
-    good: group.좋음,
-    total: group.기록,
-    observedPercent: percent(group.좋음, group.기록),
-    estimatedPercent: percent(group.좋음 + 1, group.기록 + 2),
-    targetImproved: group.targetImproved,
-    targetCaution: group.targetCaution,
-  })).sort((a,b) => comparePrescriptionEvidence(a,b) || a.formula.localeCompare(b.formula,'ko'));
+type MatchedPair = { baseGroupId:number, addedGroupId:number };
+type Partner = { formula:string, withPartner:Counts, matched:MatchedPair[] };
+type Component = { formula:string, included:Counts, solo:Counts, groupIds:number[], partners:Map<string,Partner> };
+
+// Each row contributes to the V-grade counts of its exact regimen once. Each member
+// also receives that observation as evidence of use together, not of its solo effect.
+export function componentEvidence(clinic: ReturnType<typeof clinicalEvidence>) {
+  const all=emptyCounts();
+  const components=new Map<string,Component>();
+  const ids=new Map(clinic.groups.map((group,i)=>[JSON.stringify(group.components),i+1]));
+  for (const [index,group] of clinic.groups.entries()) {
+    const counts={total:group.기록,good:group.좋음,neutral:group.보통,bad:group.나쁨};
+    const groupId=index+1;
+    addCounts(all,counts);
+    // A base group is comparable only if omitting exactly that partner yields an
+    // observed regimen. Unrecorded A alone cannot explain a difference in A+B.
+    const partners=group.components.map(formula=>({
+      formula,
+      baseGroupId:ids.get(JSON.stringify(group.components.filter(other=>other!==formula))),
+    }));
+    for (const formula of group.components) {
+      const component:Component=components.get(formula)??{formula,included:emptyCounts(),solo:emptyCounts(),groupIds:[],partners:new Map()};
+      addCounts(component.included,counts);
+      if (group.components.length===1) addCounts(component.solo,counts);
+      component.groupIds.push(groupId);
+      for (const partner of partners) {
+        if (partner.formula===formula) continue;
+        const record:Partner=component.partners.get(partner.formula)??{formula:partner.formula,withPartner:emptyCounts(),matched:[]};
+        addCounts(record.withPartner,counts);
+        if (partner.baseGroupId!==undefined) record.matched.push({baseGroupId:partner.baseGroupId,addedGroupId:groupId});
+        component.partners.set(partner.formula,record);
+      }
+      components.set(formula,component);
+    }
+  }
+  return [...components.values()].map(component=>({
+    ...component,
+    absent:difference(all,component.included),
+    combined:difference(component.included,component.solo),
+    partners:[...component.partners.values()].map(partner=>({...partner,withoutPartner:difference(component.included,partner.withPartner)})),
+  }));
 }

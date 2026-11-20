@@ -19,6 +19,7 @@ interface Dependencies {
   wait?: (milliseconds: number) => Promise<void>;
   signal?: AbortSignal;
   exactSearchModel?: 'gpt-6.2-astra' | 'gemini-4-argon';
+  responseSchema?: Record<string, unknown>;
 }
 
 export async function generateFollowUpResponse(prompt: unknown, requestedEngine?: unknown, deps: Dependencies = {}) {
@@ -37,6 +38,9 @@ export async function generateFollowUpResponse(prompt: unknown, requestedEngine?
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${env.OPENAI_API_KEY}` },
         body: JSON.stringify({ model: openaiModel, input: prompt, store: false,
+          ...(deps.responseSchema && { text: { format: {
+            type: 'json_schema', name: 'prescription_synthesis', strict: true, schema: deps.responseSchema,
+          } } }),
           reasoning: { effort: 'medium' }, max_output_tokens: 16384 }),
         signal: deps.signal ? AbortSignal.any([deps.signal, timeout]) : timeout,
         redirect: 'error',
@@ -69,6 +73,7 @@ export async function generateFollowUpResponse(prompt: unknown, requestedEngine?
   const generate = deps.geminiGenerate ?? (async (model: string, input: string, apiKey: string) => {
     const response = await new GoogleGenAI({ apiKey }).models.generateContent({
       model, contents: [{ role: 'user', parts: [{ text: input }] }],
+      ...(deps.responseSchema && { config: { responseMimeType: 'application/json', responseJsonSchema: deps.responseSchema } }),
     });
     return response.text ?? '';
   });
